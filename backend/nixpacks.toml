@@ -1,0 +1,13 @@
+# backend/nixpacks.toml
+
+[phases.setup]
+# Install the missing C libraries and the compiler
+nixPkgs = ["portaudio", "gcc", "pkg-config"]
+
+[phases.install]
+# Force it to install Python packages AFTER the C libraries are ready
+cmds = ["python -m venv .venv", "source .venv/bin/activate", "pip install -r requirements.txt"]
+
+[start]
+# The command to start your server
+cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"
