@@ -2,7 +2,14 @@
 
 import { useRef, useState, useEffect } from "react";
 
-// --- TYPES ---
+// --- CONFIGURATION ---
+// automatically use the right URL based on where the app is running
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+
+// handling WebSocket protocol (ws:// for local, wss:// for secure cloud)
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws";
+
 type LogEntry = {
   type: "transcript" | "ai";
   text: string;
@@ -53,7 +60,7 @@ export default function LiveTranscript() {
     formData.append("job_description", jobDescription);
 
     try {
-      const response = await fetch("http://localhost:8000/submit-context", {
+      const response = await fetch(`${BACKEND_URL}/submit-context`, {
         method: "POST",
         body: formData,
       });
@@ -102,7 +109,7 @@ export default function LiveTranscript() {
       streamRef.current = stream;
       stream.getVideoTracks()[0].onended = stopInterview;
 
-      const ws = new WebSocket("ws://localhost:8000/ws");
+      const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
 
       ws.onopen = () => {
