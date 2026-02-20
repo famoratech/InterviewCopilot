@@ -25,4 +25,5 @@ COPY . .
 
 # 6. Command to start the server
 # We use the $PORT variable provided by Railway
-CMD uvicorn main:app --host 0.0.0.0 --port $PORT
+EXPOSE 8000
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
