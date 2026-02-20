@@ -31,7 +31,11 @@ logger = logging.getLogger("backend")
 
 app = FastAPI()
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all domains (like your Vercel URL) to connect
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # --- GLOBAL STATE ---
