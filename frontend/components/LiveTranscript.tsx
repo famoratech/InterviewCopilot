@@ -3,11 +3,8 @@
 import { useRef, useState, useEffect } from "react";
 
 // --- CONFIGURATION ---
-// automatically use the right URL based on where the app is running
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
-
-// handling WebSocket protocol (ws:// for local, wss:// for secure cloud)
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws";
 
 type LogEntry = {
@@ -141,10 +138,8 @@ export default function LiveTranscript() {
     }
   };
 
-  // ✅ FIXED: IMMUTABLE STATE UPDATES
   const handleServerMessage = (data: any) => {
     setLogs((prev) => {
-      // 1. Create a shallow copy of the array
       const newLogs = [...prev];
       const lastIndex = newLogs.length - 1;
       const lastLog = newLogs[lastIndex];
@@ -154,7 +149,6 @@ export default function LiveTranscript() {
 
         if (data.is_final) {
           if (isUserBubble) {
-            // ✅ IMMUTABLE: Replace the object with a new one
             newLogs[lastIndex] = {
               ...lastLog,
               text: (lastLog.text ? lastLog.text + " " : "") + data.text,
@@ -162,14 +156,12 @@ export default function LiveTranscript() {
             };
             return newLogs;
           } else {
-            // New Bubble
             return [
               ...prev,
               { type: "transcript", text: data.text, timestamp: Date.now() },
             ];
           }
         } else {
-          // Partial (Interim)
           if (isUserBubble) {
             newLogs[lastIndex] = {
               ...lastLog,
@@ -198,7 +190,6 @@ export default function LiveTranscript() {
       }
 
       if (data.event === "ai_chunk" && lastLog?.type === "ai") {
-        // ✅ IMMUTABLE: Replace the object
         newLogs[lastIndex] = {
           ...lastLog,
           text: lastLog.text + data.text,
@@ -232,48 +223,58 @@ export default function LiveTranscript() {
     cleanup();
   };
 
-  // --- RENDER ---
+  // --- RENDER (STEP 1: SETUP) ---
   if (step === "setup") {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[80vh] p-4">
-        <div className="bg-white p-8 rounded-xl shadow-lg border w-full max-w-lg">
-          <h1 className="text-2xl font-bold mb-2">Interview Setup</h1>
-          <p className="text-gray-500 mb-6 text-sm">
-            Upload your resume so the AI can answer questions about your
-            experience.
-          </p>
+      <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 p-4 font-sans text-gray-800">
+        <div className="bg-white p-8 rounded-2xl shadow-lg border border-gray-100 w-full max-w-lg">
+          <div className="text-center mb-8">
+            <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600 mb-2">
+              Interview Copilot
+            </h1>
+            <p className="text-gray-500 text-sm">
+              Upload your context to get started.
+            </p>
+          </div>
 
-          <form onSubmit={handleSubmitContext} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Upload Resume (PDF, DOCX, TXT) *
+          <form onSubmit={handleSubmitContext} className="space-y-5">
+            <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100">
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                1. Upload Resume
               </label>
               <input
                 type="file"
                 accept=".pdf,.docx,.txt"
                 onChange={(e) => setResumeFile(e.target.files?.[0] || null)}
-                className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                className="block w-full text-sm text-gray-500 file:mr-4 file:py-2.5 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 transition cursor-pointer"
                 required
               />
             </div>
+
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Job Description (Optional)
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                2. Job Description (Optional)
               </label>
               <textarea
                 value={jobDescription}
                 onChange={(e) => setJobDescription(e.target.value)}
                 placeholder="Paste the job description here..."
-                className="w-full p-3 border rounded-lg h-32 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                className="w-full p-4 border border-gray-200 rounded-xl h-32 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none shadow-sm"
               />
             </div>
-            {error && <p className="text-red-500 text-sm">{error}</p>}
+
+            {error && (
+              <div className="p-3 bg-red-50 border border-red-100 text-red-600 text-sm rounded-lg text-center">
+                {error}
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition disabled:opacity-50"
+              className="w-full bg-gray-900 hover:bg-gray-800 text-white font-bold py-4 rounded-xl transition disabled:opacity-50 shadow-md mt-4"
             >
-              {isSubmitting ? "Processing..." : "Continue to Interview"}
+              {isSubmitting ? "Processing..." : "Submit Context"}
             </button>
           </form>
         </div>
@@ -281,17 +282,32 @@ export default function LiveTranscript() {
     );
   }
 
+  // --- RENDER (STEP 2: INTERVIEW) ---
   return (
-    <div className="flex flex-col gap-4 w-full max-w-3xl mx-auto h-[85vh] p-4 font-sans">
-      <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border">
+    <div className="flex flex-col w-full max-w-4xl mx-auto h-screen p-4 md:p-6 font-sans text-gray-800 bg-gray-50">
+      {/* Header & Controls */}
+      <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 flex flex-col sm:flex-row justify-between items-center gap-4 mb-4 z-10">
         <div>
-          <h2 className="font-bold text-gray-800">Live Interview Copilot</h2>
-          <div className="flex items-center gap-2 mt-1">
-            <div
-              className={`w-2 h-2 rounded-full ${isConnected ? "bg-green-500 animate-pulse" : "bg-gray-300"}`}
-            />
+          <h2 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">
+            Interview Copilot
+          </h2>
+          <div className="flex items-center gap-2 mt-1 h-4">
+            {isConnected ? (
+              // The moving equalizer bars
+              <div className="flex items-end gap-[2px] h-3">
+                <div className="w-1 bg-green-500 rounded-full animate-[bounce_1s_infinite_0ms] h-full"></div>
+                <div className="w-1 bg-green-500 rounded-full animate-[bounce_1.2s_infinite_100ms] h-2/3"></div>
+                <div className="w-1 bg-green-500 rounded-full animate-[bounce_0.9s_infinite_200ms] h-4/5"></div>
+                <div className="w-1 bg-green-500 rounded-full animate-[bounce_1.1s_infinite_300ms] h-full"></div>
+              </div>
+            ) : (
+              // The resting gray dot
+              <div className="w-2 h-2 rounded-full bg-gray-300" />
+            )}
             <p className="text-xs text-gray-500 font-medium">
-              {isConnected ? "Listening for questions..." : "Ready to connect"}
+              {isConnected
+                ? "Listening to interview tab..."
+                : "Ready to connect"}
             </p>
           </div>
         </div>
@@ -300,64 +316,68 @@ export default function LiveTranscript() {
           <button
             onClick={startInterview}
             disabled={isConnecting}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-semibold shadow-md transition"
+            className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-semibold shadow-md transition"
           >
             {isConnecting ? "Connecting..." : "Start Interview"}
           </button>
         ) : (
           <button
             onClick={stopInterview}
-            className="bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 px-6 py-2 rounded-lg font-semibold transition"
+            className="w-full sm:w-auto bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 px-8 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2"
           >
+            <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-ping"></span>
             Stop
           </button>
         )}
       </div>
 
       {!isConnected && !isConnecting && (
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800 shadow-sm">
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800 shadow-sm mb-4">
           <strong>How to use:</strong>
           <ul className="list-disc pl-5 mt-2 space-y-1">
             <li>
               Click <b>Start Interview</b>.
             </li>
             <li>
-              Select the <b>Tab</b> with the audio.
+              Select the <b>Tab</b> with the meeting audio (e.g., Google Meet,
+              Zoom web).
             </li>
             <li>
               <span className="bg-yellow-200 px-1 rounded text-black font-bold">
                 IMPORTANT:
-              </span>
+              </span>{" "}
               Check <b>"Share system audio"</b>.
             </li>
           </ul>
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto bg-gray-50 rounded-xl border border-gray-200 p-6 space-y-6 shadow-inner relative">
+      {/* Main Chat Area */}
+      <div className="flex-1 overflow-y-auto bg-white rounded-2xl border border-gray-200 p-4 md:p-8 space-y-6 shadow-sm relative">
         {logs.length === 0 && isConnected && (
           <div className="absolute inset-0 flex items-center justify-center text-gray-400">
-            <p>Waiting for the interviewer to speak...</p>
+            <div className="text-center">
+              <span className="text-3xl block mb-2">🎙️</span>
+              <p>Listening... speak into your microphone.</p>
+            </div>
           </div>
         )}
 
         {logs.map((log, i) => (
           <div
             key={i}
-            className={`flex flex-col max-w-[85%] ${
-              log.type === "transcript"
-                ? "self-end items-end"
-                : "self-start items-start"
+            className={`flex flex-col w-full ${
+              log.type === "transcript" ? "items-end" : "items-start"
             }`}
           >
             <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 px-1">
               {log.type === "transcript" ? "Interviewer" : "AI Copilot"}
             </span>
             <div
-              className={`p-4 rounded-2xl text-[15px] leading-relaxed shadow-sm ${
+              className={`max-w-[90%] md:max-w-[75%] p-4 rounded-2xl text-[15px] leading-relaxed shadow-sm ${
                 log.type === "transcript"
                   ? "bg-blue-600 text-white rounded-tr-none"
-                  : "bg-white text-gray-800 border border-gray-100 rounded-tl-none"
+                  : "bg-gray-100 text-gray-800 border border-gray-200 rounded-tl-none"
               }`}
             >
               <span>{log.text}</span>
@@ -365,12 +385,13 @@ export default function LiveTranscript() {
                 <span className="opacity-70 italic">{log.pending}</span>
               )}
               {log.isStreaming && (
-                <span className="inline-block w-1.5 h-4 bg-blue-400 ml-1 animate-pulse" />
+                <span className="inline-block w-1.5 h-4 bg-blue-400 ml-1.5 animate-pulse align-middle" />
               )}
             </div>
           </div>
         ))}
-        <div ref={logsEndRef} />
+        {/* Invisible element to auto-scroll to */}
+        <div ref={logsEndRef} className="h-4" />
       </div>
     </div>
   );
