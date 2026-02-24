@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
+import { supabase } from "../lib/supabase"; // <-- ADD THIS
 
 // --- CONFIGURATION ---
 const BACKEND_URL =
@@ -24,6 +25,8 @@ export default function LiveTranscript() {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
 
   // Setup Form State
   const [resumeFile, setResumeFile] = useState<File | null>(null);
@@ -36,10 +39,54 @@ export default function LiveTranscript() {
   const streamRef = useRef<MediaStream | null>(null);
   const logsEndRef = useRef<HTMLDivElement | null>(null);
 
+  // --- NEW: FORMAT SECONDS TO MM:SS ---
+  const formatTime = (totalSeconds: number | null) => {
+    if (totalSeconds === null) return "0:00";
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  // --- NEW: LOCAL TICKER ---
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    // Only tick down if we are actively connected to the interview
+    if (isConnected) {
+      interval = setInterval(() => {
+        setTimeRemaining((prev) => {
+          if (prev === null || prev <= 0) return prev;
+          return prev - 1; // Deduct 1 second locally
+        });
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isConnected]);
+
   // Auto-scroll
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
+
+  useEffect(() => {
+    const fetchCredits = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const { data, error } = await supabase
+        .from("user_credits")
+        .select("balance_minutes")
+        .eq("user_id", session.user.id)
+        .single();
+
+      if (data) {
+        setTimeRemaining(data.balance_minutes * 60); // Multiply by 60!
+      }
+    };
+
+    fetchCredits();
+  }, []);
 
   // --- STEP 1: SUBMIT CONTEXT ---
   const handleSubmitContext = async (e: React.FormEvent) => {
@@ -106,7 +153,19 @@ export default function LiveTranscript() {
       streamRef.current = stream;
       stream.getVideoTracks()[0].onended = stopInterview;
 
-      const ws = new WebSocket(WS_URL);
+      // Grab the current user's session token
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) {
+        setError("You must be logged in to start an interview.");
+        setIsConnecting(false);
+        return;
+      }
+
+      // Attach the token securely to the WebSocket URL
+      const wsUrlWithToken = `${WS_URL}?token=${session.access_token}`;
+      const ws = new WebSocket(wsUrlWithToken);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -139,6 +198,19 @@ export default function LiveTranscript() {
   };
 
   const handleServerMessage = (data: any) => {
+    if (data.event === "out_of_credits") {
+      stopInterview();
+      setShowUpgradeModal(true);
+      setTimeRemaining(0);
+      return;
+    }
+
+    if (data.event === "credit_update") {
+      // Sync the local stopwatch with the official database balance
+      setTimeRemaining(data.balance * 60);
+      return;
+    }
+
     setLogs((prev) => {
       const newLogs = [...prev];
       const lastIndex = newLogs.length - 1;
@@ -223,6 +295,35 @@ export default function LiveTranscript() {
     cleanup();
   };
 
+  // --- NEW: STRIPE CHECKOUT HANDLER ---
+  const handleUpgrade = async () => {
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const response = await fetch(`${BACKEND_URL}/create-checkout-session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: session.access_token,
+          return_url: window.location.origin, // Sends them back to wherever they are currently (localhost or live site)
+        }),
+      });
+
+      const data = await response.json();
+      if (data.url) {
+        // Redirect the user to Stripe's secure checkout page!
+        window.location.href = data.url;
+      } else {
+        alert("Failed to start checkout. Please try again.");
+      }
+    } catch (err) {
+      console.error("Checkout error:", err);
+    }
+  };
+
   // --- RENDER (STEP 1: SETUP) ---
   if (step === "setup") {
     return (
@@ -232,7 +333,26 @@ export default function LiveTranscript() {
             <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600 mb-2">
               Interview Copilot
             </h1>
-            <p className="text-gray-500 text-sm">
+
+            <div className="flex items-center justify-center gap-2 mt-3">
+              {timeRemaining !== null && (
+                <span
+                  className={`text-sm font-bold px-3 py-1.5 rounded-lg border shadow-sm transition-colors ${timeRemaining > 780 ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-red-50 text-red-700 border-red-200"}`}
+                >
+                  ⏳ {formatTime(timeRemaining)} left
+                </span>
+              )}
+              {/* --- NEW: PERSISTENT TOP UP BUTTON --- */}
+              <button
+                type="button"
+                onClick={handleUpgrade}
+                className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all shadow-sm ${timeRemaining !== null && timeRemaining < 300 ? "bg-red-600 hover:bg-red-700 text-white animate-pulse" : "bg-gray-900 hover:bg-gray-800 text-white"}`}
+              >
+                + Add Time
+              </button>
+            </div>
+
+            <p className="text-gray-500 text-sm mt-4">
               Upload your context to get started.
             </p>
           </div>
@@ -288,9 +408,28 @@ export default function LiveTranscript() {
       {/* Header & Controls */}
       <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 flex flex-col sm:flex-row justify-between items-center gap-4 mb-4 z-10">
         <div>
-          <h2 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">
-            Interview Copilot
-          </h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600 hidden sm:block">
+              Interview Copilot
+            </h2>
+
+            {/* --- TIMER BADGE --- */}
+            {timeRemaining !== null && (
+              <span
+                className={`text-xs font-bold px-2.5 py-1 rounded-md border shadow-sm transition-colors ${timeRemaining > 780 ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-red-50 text-red-700 border-red-200"}`}
+              >
+                ⏳ {formatTime(timeRemaining)}
+              </span>
+            )}
+
+            {/* --- NEW: PERSISTENT TOP UP BUTTON --- */}
+            <button
+              onClick={handleUpgrade}
+              className={`text-xs font-bold px-2.5 py-1 rounded-md transition-all shadow-sm ${timeRemaining !== null && timeRemaining < 300 ? "bg-red-600 hover:bg-red-700 text-white animate-pulse" : "bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-200"}`}
+            >
+              + Add Time
+            </button>
+          </div>
           <div className="flex items-center gap-2 mt-1 h-4">
             {isConnected ? (
               // The moving equalizer bars
@@ -393,6 +532,40 @@ export default function LiveTranscript() {
         {/* Invisible element to auto-scroll to */}
         <div ref={logsEndRef} className="h-4" />
       </div>
+      {/* --- NEW UPGRADE MODAL --- */}
+      {showUpgradeModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center border border-gray-100 relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-500 to-indigo-600"></div>
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">
+              Out of Free Minutes!
+            </h2>
+            <p className="text-gray-600 mb-6 text-sm leading-relaxed">
+              You've used up your 15 free minutes. Upgrade your account to
+              continue crushing your interviews with real-time AI assistance.
+            </p>
+
+            <div className="space-y-3">
+              <button
+                onClick={handleUpgrade}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl transition shadow-md flex justify-center items-center gap-2"
+              >
+                <span>Buy 2 Hours</span>
+                <span className="bg-blue-800 text-blue-100 text-xs px-2 py-0.5 rounded">
+                  Popular
+                </span>
+              </button>
+
+              <button
+                onClick={() => setShowUpgradeModal(false)}
+                className="w-full bg-gray-50 hover:bg-gray-100 text-gray-600 font-semibold py-3.5 rounded-xl transition"
+              >
+                Maybe later
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
