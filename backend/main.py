@@ -37,6 +37,18 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(
 logger = logging.getLogger("backend")
 
 app = FastAPI()
+
+@app.get("/debug-env")
+async def debug_env():
+    import os
+    return {
+        "SUPABASE_URL_EXISTS": bool(os.getenv("SUPABASE_URL")),
+        "SUPABASE_URL_LENGTH": len(os.getenv("SUPABASE_URL")) if os.getenv("SUPABASE_URL") else 0,
+        "SUPABASE_KEY_EXISTS": bool(os.getenv("SUPABASE_SERVICE_KEY")),
+        "STRIPE_EXISTS": bool(os.getenv("STRIPE_SECRET_KEY")),
+        "DEEPGRAM_EXISTS": bool(os.getenv("DEEPGRAM_API_KEY")),
+        "GHOST_KEYS_FOUND": [k for k in os.environ.keys() if "SUPA" in k or "STRIPE" in k]
+    }
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
