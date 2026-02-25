@@ -30,6 +30,8 @@ from pydantic import BaseModel
 
 load_dotenv()
 
+print("👀 PYTHON SEES THESE VARIABLES:", list(os.environ.keys()))
+
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 logger = logging.getLogger("backend")
