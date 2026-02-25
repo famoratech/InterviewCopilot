@@ -126,7 +126,7 @@ async def create_checkout_session(req: CheckoutRequest):
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
             line_items=[{
-                'price': 'price_1T487oEFLEZAHwelyaBQmwMA', # <--- PASTE YOUR PRICE ID HERE
+                'price': 'price_1T4pnAEFLEZAHwelrTvPR1Os', # <--- PASTE YOUR PRICE ID HERE
                 'quantity': 1,
             }],
             mode='payment',
