@@ -375,10 +375,16 @@ export default function LiveTranscript() {
               <label className="block text-sm font-semibold text-gray-700 mb-2">
                 2. Job Description (Optional)
               </label>
+              <p className="text-sm text-gray-500 mb-2 italic">
+                💡 <span className="font-semibold">Pro Tip:</span> Paste the job
+                description AND the company's "About Us" page here. This trains
+                your AI to help you answer questions related to the
+                organisation.
+              </p>
               <textarea
                 value={jobDescription}
                 onChange={(e) => setJobDescription(e.target.value)}
-                placeholder="Paste the job description here..."
+                placeholder="Paste the job description and company info here..."
                 className="w-full p-4 border border-gray-200 rounded-xl h-32 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none shadow-sm"
               />
             </div>
