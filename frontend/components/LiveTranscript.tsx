@@ -27,6 +27,8 @@ export default function LiveTranscript() {
   const [error, setError] = useState<string | null>(null);
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const isPausedRef = useRef(false);
 
   // Setup Form State
   const [resumeFile, setResumeFile] = useState<File | null>(null);
@@ -47,6 +49,18 @@ export default function LiveTranscript() {
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
+  // 1. Load saved description on startup
+  useEffect(() => {
+    const savedJD = localStorage.getItem("jobDescription_cache");
+    if (savedJD) {
+      setJobDescription(savedJD);
+    }
+  }, []);
+
+  // 2. Save description whenever they type
+  useEffect(() => {
+    localStorage.setItem("jobDescription_cache", jobDescription);
+  }, [jobDescription]);
   // --- NEW: LOCAL TICKER ---
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -102,6 +116,18 @@ export default function LiveTranscript() {
     const formData = new FormData();
     formData.append("resume", resumeFile);
     formData.append("job_description", jobDescription);
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (user) {
+      formData.append("user_id", user.id);
+    } else {
+      // Safety net: Stop if no user found
+      setError("User session expired. Please log in again.");
+      setIsSubmitting(false);
+      return;
+    }
 
     try {
       const response = await fetch(`${BACKEND_URL}/submit-context`, {
@@ -123,10 +149,14 @@ export default function LiveTranscript() {
   };
 
   // --- STEP 2: START INTERVIEW ---
+  // --- STEP 2: START INTERVIEW ---
   const startInterview = async () => {
     if (wsRef.current || isConnecting) return;
+
+    // RESET STATES
     setError(null);
     setIsConnecting(true);
+    setIsPaused(false); // <--- NEW: Ensure we start fresh
 
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
@@ -178,6 +208,7 @@ export default function LiveTranscript() {
         mediaRecorderRef.current = mediaRecorder;
 
         mediaRecorder.ondataavailable = (event) => {
+          // ALWAYS send the data. If paused, the browser sends silence automatically.
           if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
             ws.send(event.data);
           }
@@ -194,6 +225,23 @@ export default function LiveTranscript() {
       console.error(err);
       setError("Failed to start recording.");
       setIsConnecting(false);
+    }
+  };
+
+  const togglePause = () => {
+    // 1. Check if we have a valid stream
+    if (!streamRef.current) return;
+    const audioTrack = streamRef.current.getAudioTracks()[0];
+    if (!audioTrack) return;
+
+    if (isPaused) {
+      // RESUME: Unmute the microphone
+      audioTrack.enabled = true;
+      setIsPaused(false);
+    } else {
+      // PAUSE: Mute the microphone (Browser sends silence)
+      audioTrack.enabled = false;
+      setIsPaused(true);
     }
   };
 
@@ -284,14 +332,20 @@ export default function LiveTranscript() {
   const cleanup = () => {
     setIsConnected(false);
     setIsConnecting(false);
+    setIsPaused(false); // <--- Reset the button
     wsRef.current = null;
     mediaRecorderRef.current?.stop();
     streamRef.current?.getTracks().forEach((t) => t.stop());
   };
 
   const stopInterview = () => {
-    wsRef.current?.send(JSON.stringify({ text: "stop" }));
-    wsRef.current?.close();
+    // 1. Tell the backend to stop (if we are still connected)
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ text: "stop" }));
+      wsRef.current.close();
+    }
+
+    // 2. Run the local cleanup
     cleanup();
   };
 
@@ -339,7 +393,7 @@ export default function LiveTranscript() {
                 <span
                   className={`text-sm font-bold px-3 py-1.5 rounded-lg border shadow-sm transition-colors ${timeRemaining > 780 ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-red-50 text-red-700 border-red-200"}`}
                 >
-                  ⏳ {formatTime(timeRemaining)} left
+                  ⏳ {formatTime(timeRemaining)} Min(s) left
                 </span>
               )}
               {/* --- NEW: PERSISTENT TOP UP BUTTON --- */}
@@ -461,18 +515,73 @@ export default function LiveTranscript() {
           <button
             onClick={startInterview}
             disabled={isConnecting}
-            className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-semibold shadow-md transition"
+            className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-semibold shadow-md transition disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isConnecting ? "Connecting..." : "Start Interview"}
           </button>
         ) : (
-          <button
-            onClick={stopInterview}
-            className="w-full sm:w-auto bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 px-8 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2"
-          >
-            <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-ping"></span>
-            Stop
-          </button>
+          <div className="flex gap-3 w-full sm:w-auto">
+            {/* PAUSE / RESUME BUTTON */}
+            <button
+              onClick={togglePause}
+              className={`flex-1 sm:flex-none px-6 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2 text-white shadow-sm ${
+                isPaused
+                  ? "bg-green-600 hover:bg-green-700" // Green when ready to Resume
+                  : "bg-yellow-500 hover:bg-yellow-600" // Yellow when ready to Pause
+              }`}
+            >
+              {isPaused ? (
+                <>
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
+                    />
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  Resume
+                </>
+              ) : (
+                <>
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  Pause
+                </>
+              )}
+            </button>
+
+            {/* STOP BUTTON */}
+            <button
+              onClick={stopInterview}
+              className="flex-1 sm:flex-none bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 px-8 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2 shadow-sm"
+            >
+              <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-ping"></span>
+              Stop
+            </button>
+          </div>
         )}
       </div>
 
@@ -544,11 +653,11 @@ export default function LiveTranscript() {
           <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center border border-gray-100 relative overflow-hidden">
             <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-500 to-indigo-600"></div>
             <h2 className="text-2xl font-bold text-gray-900 mb-2">
-              Out of Free Minutes!
+              Out of Minutes!
             </h2>
             <p className="text-gray-600 mb-6 text-sm leading-relaxed">
-              You've used up your 15 free minutes. Upgrade your account to
-              continue crushing your interviews with real-time AI assistance.
+              You've used up your minutes. Upgrade your account to continue
+              crushing your interviews with real-time AI assistance.
             </p>
 
             <div className="space-y-3">

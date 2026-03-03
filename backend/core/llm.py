@@ -1,57 +1,26 @@
-# # backend/core/llm.py
-
-# import os
-# from openai import AsyncOpenAI # ✅ MUST BE ASYNC
-# from dotenv import load_dotenv
-
-# load_dotenv()
-
-# # Initialize Async Client
-# client = AsyncOpenAI(
-#     base_url="https://openrouter.ai/api/v1",
-#     api_key=os.getenv("OPENROUTER_API_KEY"),
-# )
-
-# async def stream_completion(messages, model="meta-llama/llama-3.1-8b-instruct"):
-#     """
-#     Streams AI response without blocking the server event loop.
-#     """
-#     try:
-#         completion = await client.chat.completions.create(
-#             extra_headers={
-#                 "HTTP-Referer": "http://localhost:3000",
-#                 "X-Title": "InterviewHelp",
-#             },
-#             model=model,
-#             messages=messages,
-#             stream=True,
-#         )
-
-#         async for chunk in completion:
-#             content = chunk.choices[0].delta.content
-#             if content:
-#                 yield content
-
-#     except Exception as e:
-#         yield f" [AI Error: {str(e)}]"
-
 import os
+import logging
 from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Setup Logging
+logger = logging.getLogger("backend")
+
 # Initialize Groq Client
-# It automatically looks for GROQ_API_KEY in environment variables
-client = Groq()
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+# The Best Model (Now powered by your credit card)
+MODEL_NAME = "llama-3.3-70b-versatile"
 
 async def stream_completion(messages):
     """
-    Streams the response from Groq's LPU (Language Processing Unit).
+    Streams response from Groq.
     """
     try:
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile", # The current best/fastest model
+            model=MODEL_NAME,
             messages=messages,
             temperature=0.6,
             max_tokens=1024,
@@ -66,4 +35,8 @@ async def stream_completion(messages):
                 yield content
 
     except Exception as e:
-        yield f"Error generating response: {str(e)}"
+        # Log the error so you can see it in your terminal
+        logger.error(f"❌ Groq Error: {str(e)}")
+        
+        # Send a user-friendly message to the frontend
+        yield f" [AI Connection Error: {str(e)}]"

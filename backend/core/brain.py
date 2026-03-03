@@ -1,44 +1,3 @@
-# import logging
-
-# logger = logging.getLogger("backend")
-
-# class Brain:
-#     def __init__(self):
-#         # Stores the conversation history (User + AI)
-#         self.history = []
-#         # Limit context to keep things fast (last 10 exchanges)
-#         self.max_history = 10 
-
-#     def build_system_prompt(self):
-#         """
-#         Defines the AI Persona.
-#         """
-#         return (
-#             "You are an expert technical interviewer for a Senior Software Engineer role. "
-#             "Your goal is to assess the candidate's depth of knowledge, problem-solving skills, and communication. "
-#             "1. Keep your responses concise (under 3 sentences) unless explaining a complex concept. "
-#             "2. Be conversational but professional. "
-#             "3. Ask one follow-up question at a time. "
-#             "4. If the user's audio was cut off or unclear, politely ask them to repeat. "
-#             "5. Do not simply agree; challenge their assumptions gently to test their confidence."
-#         )
-
-#     def add_interaction(self, user_text, ai_text):
-#         """
-#         Saves the turn to history so the AI remembers context.
-#         """
-#         self.history.append({"role": "user", "content": user_text})
-#         self.history.append({"role": "assistant", "content": ai_text})
-        
-#         # Trim history if it gets too huge (Prevent 400 Bad Request from too much text)
-#         if len(self.history) > self.max_history * 2:
-#             self.history = self.history[-(self.max_history * 2):]
-#             logger.info("✂️ Trimming conversation history to maintain context window.")
-
-#     def clear_history(self):
-#         self.history = []
-
-
 import logging
 
 class Brain:
@@ -94,14 +53,11 @@ Your job is to listen to the live interview and instantly provide the candidate 
         self.history.append({"role": "user", "content": user_text})
         self.history.append({"role": "assistant", "content": ai_text})
         
-        # Keep history short (last 10 turns) to save tokens
+        # --- THE SAFETY VALVE (Sliding Window) ---
+        # Keep only the last 10 exchanges (20 messages total)
+        # This prevents the context window from overflowing during long interviews
         if len(self.history) > 20:
             self.history = self.history[-20:]
-
-
-
-
-
 
 
 
