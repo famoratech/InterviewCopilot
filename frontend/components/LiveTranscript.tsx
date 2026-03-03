@@ -466,7 +466,7 @@ export default function LiveTranscript() {
   return (
     <div className="flex flex-col w-full max-w-4xl mx-auto h-screen p-4 md:p-6 font-sans text-gray-800 bg-gray-50">
       {/* Header & Controls */}
-      <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 flex flex-col sm:flex-row justify-between items-center gap-4 mb-4 z-10">
+      <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200 flex flex-col sm:flex-row justify-between items-center gap-4 mb-4 z-10 mt-15">
         <div>
           <div className="flex items-center gap-3">
             <h2 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600 hidden sm:block">
