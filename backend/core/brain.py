@@ -1,3 +1,4 @@
+# backend/core/brain.py
 import logging
 
 class Brain:
@@ -58,8 +59,3 @@ Your job is to listen to the live interview and instantly provide the candidate 
         # This prevents the context window from overflowing during long interviews
         if len(self.history) > 20:
             self.history = self.history[-20:]
-
-
-
-
-

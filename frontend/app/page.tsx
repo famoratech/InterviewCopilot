@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabase";
 import Auth from "../components/Auth";
-import LiveTranscript from "../components/LiveTranscript";
 
 export default function Home() {
+  const router = useRouter();
   const [session, setSession] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRecovering, setIsRecovering] = useState(false);
@@ -16,20 +17,27 @@ export default function Home() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setIsLoading(false);
+      // Redirect if already logged in
+      if (session) router.push("/dashboard");
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
-      // Catch the user when they click the password reset link in their email!
+
+      // Redirect on login
+      if (session && event === "SIGNED_IN") {
+        router.push("/dashboard");
+      }
+
       if (event === "PASSWORD_RECOVERY") {
         setIsRecovering(true);
       }
     });
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [router]);
 
   const handlePasswordUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,7 +47,7 @@ export default function Home() {
       setUpdateMessage(`Error: ${error.message}`);
     } else {
       setUpdateMessage("Password updated successfully!");
-      setTimeout(() => setIsRecovering(false), 2000); // Close form after 2 seconds
+      setTimeout(() => setIsRecovering(false), 2000);
     }
   };
 
@@ -51,7 +59,6 @@ export default function Home() {
     );
   }
 
-  // If they clicked the reset link, force them to set a new password right now
   if (isRecovering) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 p-4 font-sans text-gray-800">
@@ -90,20 +97,8 @@ export default function Home() {
   }
 
   if (!session) {
-    return <Auth onLogin={() => {}} />;
+    return <Auth onLogin={() => router.push("/dashboard")} />;
   }
 
-  return (
-    <div className="relative min-h-screen bg-gray-50">
-      <div className="absolute top-4 right-4 z-50">
-        <button
-          onClick={() => supabase.auth.signOut()}
-          className="bg-white border border-gray-200 shadow-sm text-xs font-semibold text-gray-600 px-3 py-1.5 rounded-lg hover:text-red-600 hover:border-red-200 transition"
-        >
-          Sign Out ({session.user.email})
-        </button>
-      </div>
-      <LiveTranscript />
-    </div>
-  );
+  return null;
 }

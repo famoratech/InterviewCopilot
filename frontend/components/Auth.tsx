@@ -1,3 +1,4 @@
+// frontend/components/Auth.tsx
 "use client";
 
 import { useState } from "react";

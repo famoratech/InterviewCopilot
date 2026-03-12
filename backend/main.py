@@ -2,14 +2,18 @@ import os
 import logging
 import asyncio
 import json
+import io
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from pydantic import BaseModel
+from typing import List, Optional
 
-# --- SUPABASE ---
+# --- SUPABASE & STRIPE ---
 from supabase import create_client, Client
+import stripe
 
-# Deepgram SDK
+# --- DEEPGRAM ---
 from deepgram import (
     DeepgramClient,
     DeepgramClientOptions,
@@ -17,16 +21,16 @@ from deepgram import (
     LiveOptions,
 )
 
-# Document Parsers
-from pypdf import PdfReader
+# --- DOCUMENT PARSERS ---
+from pypdf import PdfReader  # Reverted back to your original pypdf
 from docx import Document
-import io
 
-# Internal Modules
+# --- INTERNAL MODULES ---
 from core.brain import Brain
 from core.llm import stream_completion
-import stripe
-from pydantic import BaseModel
+
+# --- NEW: AI CLIENT FOR COACH ---
+from groq import Groq 
 
 load_dotenv()
 
@@ -46,9 +50,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- NEW: MULTI-USER SESSION MANAGEMENT ---
-# Instead of one global brain, we store a dictionary of brains.
-# Format: { "user_123": Brain_Instance, "user_456": Brain_Instance }
+# --- IN-MEMORY SESSION MANAGEMENT ---
 user_sessions = {}
 
 def get_brain_for_user(user_id: str):
@@ -58,14 +60,13 @@ def get_brain_for_user(user_id: str):
         user_sessions[user_id] = Brain()
     return user_sessions[user_id]
 
-# --- API KEYS & CLIENTS ---
+
+# --- API KEYS & CLIENTS SETUP ---
 raw_api_key = os.getenv("DEEPGRAM_API_KEY")
 DEEPGRAM_API_KEY = raw_api_key.strip() if raw_api_key else None
 
 if not DEEPGRAM_API_KEY:
     logger.error("❌ Deepgram API Key missing! Check .env file.")
-else:
-    logger.info(f"🔑 Deepgram Key Loaded: {DEEPGRAM_API_KEY[:4]}...{DEEPGRAM_API_KEY[-4:]}")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
@@ -76,9 +77,12 @@ if SUPABASE_URL and SUPABASE_KEY:
 else:
     logger.error("❌ Supabase URL or Service Key missing from .env!")
 
+# STRIPE SETUP
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-if not stripe.api_key:
-    logger.error("❌ Stripe Secret Key missing from .env!")
+
+# Initialize the AI Client for the Coach feature
+# Ensure GROQ_API_KEY is in your .env
+coach_llm_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 
 # --- HELPER FUNCTIONS ---
@@ -100,34 +104,75 @@ def extract_text_from_file(file_content: bytes, filename: str) -> str:
         return "Error reading resume."
     return text
 
-# --- ENDPOINTS ---
+def get_difficulty_instruction(level: str):
+    if level == "Easy":
+        return "Ask standard behavioral questions (e.g., 'Tell me about yourself'). Be encouraging."
+    elif level == "Medium":
+        return "Ask standard technical questions relevant to the resume. Be professional."
+    elif level == "Hard":
+        return "Ask very difficult, deep technical questions and edge cases. Be skeptical."
+    return "Ask standard questions."
+
+
+# --- DATA MODELS ---
+class CheckoutRequest(BaseModel):
+    token: str
+    return_url: str
+
+class CoachReply(BaseModel):
+    history: List[dict]
+    resume_text: str  
+    job_description: str
+    user_answer: str
+    difficulty: str
+
+class SyncTimeReq(BaseModel):
+    user_id: str
+    minutes_to_deduct: int
+
+
+# ==========================================
+#         REST ENDPOINTS (CORE & BILLING)
+# ==========================================
+
+@app.post("/sync-time")
+async def sync_time(req: SyncTimeReq):
+    """Officially deducts minutes from the database during Coach sessions."""
+    try:
+        curr_res = await asyncio.to_thread(
+            lambda: supabase.table("user_credits").select("balance_minutes").eq("user_id", req.user_id).single().execute()
+        )
+        curr_bal = curr_res.data.get("balance_minutes", 0)
+        
+        if curr_bal > 0:
+            new_bal = curr_bal - req.minutes_to_deduct
+            await asyncio.to_thread(
+                lambda: supabase.table("user_credits").update({"balance_minutes": new_bal}).eq("user_id", req.user_id).execute()
+            )
+            return {"status": "success", "new_balance": new_bal}
+        return {"status": "insufficient_funds"}
+    except Exception as e:
+        logger.error(f"Sync time error: {e}")
+        return {"error": str(e)}
 
 @app.post("/submit-context")
 async def submit_context(
-    user_id: str = Form(...),  # <--- NEW: Required to identify the user
+    user_id: str = Form(...),  
     resume: UploadFile = File(...), 
     job_description: str = Form(default="")
 ):
+    """Used for the Live Copilot Context Setup"""
     try:
-        # 1. Get the specific brain for THIS user
         user_brain = get_brain_for_user(user_id)
-
-        # 2. Process the file
         content = await resume.read()
         resume_text = extract_text_from_file(content, resume.filename)
         
-        # 3. Save to THEIR specific brain
         user_brain.set_context(resume_text, job_description)
-        
         logger.info(f"✅ Context updated for User {user_id}. Resume length: {len(resume_text)}")
         return {"status": "success"}
     except Exception as e:
         logger.error(f"Upload failed: {e}")
         return {"status": "error", "message": str(e)}
-
-class CheckoutRequest(BaseModel):
-    token: str
-    return_url: str
 
 @app.post("/create-checkout-session")
 async def create_checkout_session(req: CheckoutRequest):
@@ -139,7 +184,7 @@ async def create_checkout_session(req: CheckoutRequest):
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
             line_items=[{
-                'price': 'price_1T4pnAEFLEZAHwelrTvPR1Os', # <--- Ensure this is your Live Price ID
+                'price': 'price_1T4pnAEFLEZAHwelrTvPR1Os', 
                 'quantity': 1,
             }],
             mode='payment',
@@ -160,12 +205,10 @@ async def stripe_webhook(request: Request):
     webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
 
     try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, webhook_secret
-        )
-    except ValueError as e:
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except ValueError:
         return {"error": "Invalid payload"}, 400
-    except stripe.error.SignatureVerificationError as e:
+    except stripe.error.SignatureVerificationError:
         return {"error": "Invalid signature"}, 400
 
     if event['type'] == 'checkout.session.completed':
@@ -175,7 +218,6 @@ async def stripe_webhook(request: Request):
         if user_id:
             logger.info(f"💰 Payment success for {user_id}. Adding 60 mins.")
             try:
-                # Add 60 minutes logic
                 curr_res = await asyncio.to_thread(
                     lambda: supabase.table("user_credits").select("balance_minutes").eq("user_id", user_id).single().execute()
                 )
@@ -190,7 +232,153 @@ async def stripe_webhook(request: Request):
 
     return {"status": "success"}
 
-# --- WEBSOCKET: THE BRIDGE ---
+
+# ==========================================
+#         AI COACH ENDPOINTS
+# ==========================================
+
+@app.post("/coach/start")
+async def start_coaching(
+    user_id: str = Form(...),
+    job_description: str = Form(""),
+    difficulty: str = Form("Medium"),
+    resume_text: str = Form(""),
+    resume_file: UploadFile = File(None)
+):
+    print(f"--- STARTING COACH SESSION FOR USER: {user_id} ---")
+    final_resume_text = resume_text
+
+    if resume_file:
+        print(f"Received file: {resume_file.filename}")
+        try:
+            content = await resume_file.read()
+            final_resume_text = extract_text_from_file(content, resume_file.filename)
+            print(f"Successfully extracted {len(final_resume_text)} characters from file.")
+        except Exception as e:
+            logger.error(f"File extraction failed: {str(e)}")
+            return {"error": f"Could not read file: {str(e)}"}
+
+    if not final_resume_text.strip():
+        print("Warning: No resume text provided or extracted.")
+        final_resume_text = "No resume provided. Ask general interview questions."
+
+    diff_instruction = get_difficulty_instruction(difficulty)
+    
+    prompt = f"""
+    You are an expert technical interviewer. 
+    Difficulty Level: {difficulty}
+    {diff_instruction}
+    
+    User Resume: {final_resume_text[:2000]}
+    Job Description: {job_description[:2000]}
+    
+    Start the interview. Output JUST the opening question.
+    """
+    
+    print("Calling Groq API...")
+    try:
+        response = coach_llm_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": prompt}],
+            temperature=0.7,
+            max_tokens=200
+        )
+        print("Groq API returned successfully.")
+        
+        return {
+            "message": response.choices[0].message.content,
+            "extracted_resume": final_resume_text 
+        }
+    except Exception as e:
+        logger.error(f"Groq API Error: {str(e)}")
+        # Return a 500 error structure that the frontend can at least read
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
+
+@app.post("/coach/reply")
+async def reply_coaching(data: CoachReply):
+    diff_instruction = get_difficulty_instruction(data.difficulty)
+
+    # UPDATED: We explicitly demand a JSON structure.
+    messages = [
+        {"role": "system", "content": f"""
+        You are a strict but helpful Interview Coach.
+        Difficulty Level: {data.difficulty}
+        {diff_instruction}
+        
+        Job Description: {data.job_description[:500]}
+        Resume: {data.resume_text[:1000]}
+        
+        The user just answered your question.
+        1. Analyze their answer against their resume.
+        2. Give a short rating (Poor/Good/Excellent).
+        3. Provide 1 sentence of specific feedback.
+        4. Ask the NEXT question based on the difficulty level.
+        
+        CRITICAL: You MUST respond ONLY with a valid JSON object in the exact format below. Do not include markdown code blocks, just raw JSON.
+        {{
+            "rating": "[Poor/Good/Excellent]",
+            "feedback": "Your 1 sentence feedback here.",
+            "next_question": "Your next question here."
+        }}
+        """}
+    ]
+    
+    for msg in data.history:
+        messages.append(msg)
+    
+    messages.append({"role": "user", "content": data.user_answer})
+
+    response = coach_llm_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        temperature=0.7,
+        max_tokens=500,
+        response_format={"type": "json_object"} # FORCING JSON OUTPUT (Groq supports this)
+    )
+    
+    return {"message": response.choices[0].message.content}
+
+@app.post("/coach/end")
+async def end_coaching(data: CoachReply):
+    messages = [
+        {"role": "system", "content": f"""
+        You are a strict but helpful Interview Coach. The interview is now OVER.
+        Generate a final Scorecard based on the candidate's answers.
+        Resume Context: {data.resume_text[:500]}
+        
+        CRITICAL: You MUST respond ONLY with a valid JSON object in the exact format below. 
+        Do not ask any more questions. Do not include markdown code blocks.
+        {{
+            "overall_score": 75,
+            "summary": "A 2-sentence overall summary of their performance highlighting their main strength.",
+            "areas_of_improvement": [
+                "First specific actionable bullet point.",
+                "Second specific actionable bullet point.",
+                "Third specific actionable bullet point."
+            ]
+        }}
+        """}
+    ]
+    
+    # Append the history so it knows what to grade
+    for msg in data.history:
+        messages.append(msg)
+
+    response = coach_llm_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        temperature=0.7,
+        max_tokens=600,
+        response_format={"type": "json_object"} # Force strict JSON
+    )
+    return {"message": response.choices[0].message.content}
+
+
+# ==========================================
+#         WEBSOCKET (LIVE COPILOT)
+# ==========================================
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: str = None):
     await websocket.accept()
@@ -203,15 +391,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
 
     loop = asyncio.get_event_loop()
 
-    # --- 1. AUTH & SESSION SETUP ---
     try:
         user_res = await asyncio.to_thread(supabase.auth.get_user, token)
         user_id = user_res.user.id
 
-        # LOAD THE CORRECT BRAIN FOR THIS USER
         current_brain = get_brain_for_user(user_id)
 
-        # Check credits
         credit_res = await asyncio.to_thread(
             lambda: supabase.table("user_credits").select("balance_minutes").eq("user_id", user_id).single().execute()
         )
@@ -230,7 +415,6 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
         await websocket.close(code=1008)
         return
 
-    # --- 2. BACKGROUND CREDIT TASK ---
     countdown_active = True
     async def credit_countdown():
         while countdown_active:
@@ -259,7 +443,6 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
 
     countdown_task = asyncio.create_task(credit_countdown())
 
-    # --- 3. DEEPGRAM SETUP ---
     try:
         config = DeepgramClientOptions(url="api.deepgram.com", verbose=logging.WARNING)
         deepgram = DeepgramClient(DEEPGRAM_API_KEY, config)
@@ -272,14 +455,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
 
     transcript_buffer = [] 
     
-    # --- 4. AI LOGIC (USING USER'S BRAIN) ---
     async def trigger_ai_response(text):
         if len(text.strip()) < 2: return
 
         logger.info(f"🚀 AI Triggered for {user_id}: '{text[:30]}...'")
         await websocket.send_json({"event": "ai_start"})
         
-        # USE THE USER-SPECIFIC BRAIN HERE
         system_prompt = current_brain.build_system_prompt()
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(current_brain.history)
@@ -297,7 +478,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
             logger.error(f"AI Error: {e}")
             await websocket.send_json({"event": "ai_done"})
 
-    # --- 5. EVENT HANDLERS ---
+    # DEEPGRAM EVENT HANDLERS
     def on_message(self, result, **kwargs):
         sentence = result.channel.alternatives[0].transcript
         if len(sentence) > 0:
@@ -337,7 +518,6 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
         await websocket.close()
         return
 
-    # --- 6. KEEP-ALIVE LOOP ---
     try:
         while True:
             message = await websocket.receive()
