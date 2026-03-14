@@ -4,6 +4,7 @@ import asyncio
 import json
 import io
 import re
+import hashlib
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Request,HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -329,6 +330,9 @@ async def stripe_webhook(request: Request):
 # ==========================================
 free_tier_usage = {}
 
+# ==========================================
+# ENDPOINT: OPTIMIZE RESUME
+# ==========================================
 @app.post("/optimize")
 async def optimize_resume(
     request: Request,
@@ -359,6 +363,20 @@ async def optimize_resume(
         # If they pass, record their usage for today
         free_tier_usage[identifier] = now
         print(f"Free Tier 1 used by: {identifier}")
+
+        # Permanently log guest metrics in Supabase
+        if user_id == "guest":
+            try:
+                hashed_ip = hashlib.sha256(identifier.encode()).hexdigest()
+                await asyncio.to_thread(
+                    lambda: supabase.table("guest_usage_logs").insert({
+                        "hashed_ip": hashed_ip,
+                        "feature_used": "resume_optimizer_tier_1"
+                    }).execute()
+                )
+            except Exception as e:
+                logger.error(f"Failed to log guest usage: {e}")
+                # We do NOT raise an error here. Let them have their resume even if logging fails.
 
     else:
         # --- PAID TIER LOGIC (Tiers 2 & 3) ---
@@ -427,17 +445,17 @@ async def optimize_resume(
         extractor_response = coach_llm_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "system", "content": extractor_prompt}],
-            temperature=0.0, # Zero temperature for perfect extraction
+            temperature=0.0, 
             response_format={"type": "json_object"}
         )
         extracted_data = json.loads(extractor_response.choices[0].message.content)
-        
-        # Debugging Print: See if Step 1 worked!
         print(f"\n[STEP 1] Jobs Extracted: {len(extracted_data.get('experience', []))}\n")
         
     except Exception as e:
         logger.error(f"Extractor failed: {e}")
-        await asyncio.to_thread(lambda: supabase.table("user_credits").update({"balance_minutes": curr_bal}).eq("user_id", user_id).execute())
+        # SECURE REFUND: Only refund if it's a paid tier and NOT a guest!
+        if user_id != "guest" and tier > 1:
+            await asyncio.to_thread(lambda: supabase.table("user_credits").update({"balance_minutes": curr_bal}).eq("user_id", user_id).execute())
         raise HTTPException(status_code=500, detail="Failed to parse resume.")
 
     # ==========================================
@@ -500,13 +518,13 @@ async def optimize_resume(
             response_format={"type": "json_object"}
         )
         final_ai_data = json.loads(optimizer_response.choices[0].message.content)
-        
-        # Debugging Print: See if Step 2 kept them!
         print(f"\n[STEP 2] Jobs Optimized: {len(final_ai_data.get('experience', []))}\n")
 
     except Exception as e:
         logger.error(f"Optimizer failed: {e}")
-        await asyncio.to_thread(lambda: supabase.table("user_credits").update({"balance_minutes": curr_bal}).eq("user_id", user_id).execute())
+        # SECURE REFUND: Only refund if it's a paid tier and NOT a guest!
+        if user_id != "guest" and tier > 1:
+            await asyncio.to_thread(lambda: supabase.table("user_credits").update({"balance_minutes": curr_bal}).eq("user_id", user_id).execute())
         raise HTTPException(status_code=500, detail="AI Generation failed.")
 
     # 3. Generate the Word Document
