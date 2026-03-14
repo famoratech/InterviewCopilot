@@ -43,38 +43,42 @@ const TIERS = [
 export default function ResumeOptimizerPage() {
   const router = useRouter();
 
-  // State
-  const [selectedTier, setSelectedTier] = useState<number>(2);
+  // Auth State
+  const [user, setUser] = useState<any>(null);
+
+  // App State
+  const [selectedTier, setSelectedTier] = useState<number>(1);
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [jobDescription, setJobDescription] = useState("");
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [itemsRemoved, setItemsRemoved] = useState<
-    { item: string; reason: string }[]
-  >([]);
 
   // Results State
   const [atsScore, setAtsScore] = useState<string | null>(null);
   const [missingKeywords, setMissingKeywords] = useState<string[]>([]);
+  const [itemsRemoved, setItemsRemoved] = useState<
+    { item: string; reason: string }[]
+  >([]);
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
 
-  // Fetch Credits on Load
+  // Fetch Session on Load (No forced redirect for guests!)
   useEffect(() => {
-    const fetchCredits = async () => {
+    const fetchSession = async () => {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      if (!session) return router.push("/login");
-
-      const { data } = await supabase
-        .from("user_credits")
-        .select("balance_minutes")
-        .eq("user_id", session.user.id)
-        .single();
-      if (data) setTimeRemaining(data.balance_minutes);
+      if (session) {
+        setUser(session.user);
+        const { data } = await supabase
+          .from("user_credits")
+          .select("balance_minutes")
+          .eq("user_id", session.user.id)
+          .single();
+        if (data) setTimeRemaining(data.balance_minutes);
+      }
     };
-    fetchCredits();
-  }, [router]);
+    fetchSession();
+  }, []);
 
   const handleOptimize = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,26 +86,25 @@ export default function ResumeOptimizerPage() {
     if (!jobDescription)
       return setError("Please paste the target job description.");
 
-    const cost = TIERS.find((t) => t.id === selectedTier)?.cost || 10;
-    if (timeRemaining !== null && timeRemaining < cost) {
-      return setError(
-        `You need ${cost} minutes to use this tier. You have ${timeRemaining}. Please top up.`,
-      );
+    // UI Validation before hitting the server
+    if (user && selectedTier > 1) {
+      const cost = TIERS.find((t) => t.id === selectedTier)?.cost || 25;
+      if (timeRemaining !== null && timeRemaining < cost) {
+        return setError(
+          `You need ${cost} minutes to use this tier. You have ${timeRemaining}. Please top up.`,
+        );
+      }
     }
 
     setIsOptimizing(true);
     setError(null);
     setAtsScore(null);
     setMissingKeywords([]);
+    setItemsRemoved([]);
 
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) throw new Error("Not logged in");
-
       const formData = new FormData();
-      formData.append("user_id", session.user.id);
+      formData.append("user_id", user ? user.id : "guest");
       formData.append("job_description", jobDescription);
       formData.append("tier", selectedTier.toString());
       formData.append("resume_file", resumeFile);
@@ -113,20 +116,25 @@ export default function ResumeOptimizerPage() {
 
       if (!response.ok) {
         const errData = await response.json();
+        // If the backend throws our custom 429 Guest Limit error, show a custom message
+        if (response.status === 429 && !user) {
+          throw new Error(
+            "You have used your 1 free guest optimization for today. Sign up for a free account to unlock another one immediately!",
+          );
+        }
         throw new Error(errData.detail || "Failed to optimize resume.");
       }
 
-      // 1. Read the custom headers sent by Python
+      // Read custom headers sent by Python
       const newScore = response.headers.get("X-ATS-Score");
       const newKeywordsRaw = response.headers.get("X-Missing-Keywords");
-
       const removedItemsRaw = response.headers.get("X-Items-Removed");
-      if (removedItemsRaw) setItemsRemoved(JSON.parse(removedItemsRaw));
 
+      if (removedItemsRaw) setItemsRemoved(JSON.parse(removedItemsRaw));
       if (newScore) setAtsScore(newScore);
       if (newKeywordsRaw) setMissingKeywords(JSON.parse(newKeywordsRaw));
 
-      // 2. Automatically download the Word Document!
+      // Download Word Document
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -137,8 +145,9 @@ export default function ResumeOptimizerPage() {
       link.remove();
       window.URL.revokeObjectURL(downloadUrl);
 
-      // Deduct locally for UI speed
-      if (timeRemaining !== null) {
+      // Deduct locally for UI speed (only if logged in and using paid tier)
+      if (user && selectedTier > 1 && timeRemaining !== null) {
+        const cost = TIERS.find((t) => t.id === selectedTier)?.cost || 25;
         setTimeRemaining(timeRemaining - cost);
       }
     } catch (err: any) {
@@ -150,15 +159,15 @@ export default function ResumeOptimizerPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col font-sans p-4 md:p-8">
-      {/* Header */}
+      {/* Header (Dynamic for Guests) */}
       <div className="max-w-5xl mx-auto w-full mb-8 flex justify-between items-center">
         <button
-          onClick={() => router.push("/dashboard")}
+          onClick={() => router.push(user ? "/dashboard" : "/")}
           className="text-gray-500 hover:text-gray-900 font-medium text-sm"
         >
-          ← Back to Dashboard
+          ← Back to {user ? "Dashboard" : "Home"}
         </button>
-        {timeRemaining !== null && (
+        {user && timeRemaining !== null ? (
           <div className="bg-white border border-gray-200 px-4 py-2 rounded-xl text-sm font-bold shadow-sm">
             Balance:{" "}
             <span
@@ -167,6 +176,13 @@ export default function ResumeOptimizerPage() {
               {timeRemaining} mins
             </span>
           </div>
+        ) : (
+          <button
+            onClick={() => router.push("/login")}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-xl text-sm font-bold shadow-sm transition"
+          >
+            Sign In to Unlock Pro Tiers
+          </button>
         )}
       </div>
 
@@ -174,7 +190,7 @@ export default function ResumeOptimizerPage() {
         {/* LEFT COLUMN: Input Form */}
         <div className="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-gray-100">
           <h1 className="text-3xl font-bold text-gray-900 mb-2">
-            Resume Optimizer
+            Free Resume Optimizer
           </h1>
           <p className="text-gray-500 mb-8">
             Beat the ATS and land the interview with a perfectly tailored Word
@@ -208,42 +224,78 @@ export default function ResumeOptimizerPage() {
               />
             </div>
 
-            {/* 3. Tier Selection */}
+            {/* 3. Tier Selection (Dynamic Locking) */}
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-3">
                 3. Select Optimization Tier
               </label>
               <div className="space-y-3">
-                {TIERS.map((tier) => (
-                  <div
-                    key={tier.id}
-                    onClick={() => setSelectedTier(tier.id)}
-                    className={`relative p-4 rounded-2xl border cursor-pointer transition-all ${tier.color} ${selectedTier === tier.id ? tier.activeColor : "opacity-70 hover:opacity-100"}`}
-                  >
-                    {tier.badge && (
-                      <span className="absolute -top-3 right-4 bg-gray-900 text-white text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider shadow-sm">
-                        {tier.badge}
-                      </span>
-                    )}
-                    <div className="flex justify-between items-start mb-1">
-                      <div className="font-bold flex items-center gap-2">
-                        <span>{tier.icon}</span> {tier.name}
+                {TIERS.map((tier) => {
+                  const isLocked = !user && tier.id > 1; // Lock Tiers 2 & 3 for guests
+
+                  return (
+                    <div
+                      key={tier.id}
+                      onClick={() => {
+                        if (isLocked) {
+                          router.push("/login"); // Send to sign up if they click a locked tier
+                          return;
+                        }
+                        setSelectedTier(tier.id);
+                      }}
+                      className={`relative p-4 rounded-2xl border transition-all ${isLocked ? "bg-gray-50 border-gray-200 cursor-not-allowed opacity-60" : tier.color + " cursor-pointer"} ${selectedTier === tier.id ? tier.activeColor : "hover:opacity-100"}`}
+                    >
+                      {tier.badge && !isLocked && (
+                        <span className="absolute -top-3 right-4 bg-gray-900 text-white text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider shadow-sm">
+                          {tier.badge}
+                        </span>
+                      )}
+                      {isLocked && (
+                        <span className="absolute -top-3 right-4 bg-red-100 text-red-700 text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider shadow-sm flex items-center gap-1">
+                          🔒 Login Required
+                        </span>
+                      )}
+                      <div className="flex justify-between items-start mb-1">
+                        <div className="font-bold flex items-center gap-2">
+                          <span>{tier.icon}</span> {tier.name}
+                        </div>
+                        <div className="text-xs font-bold uppercase tracking-wider bg-white/50 px-2 py-1 rounded-md">
+                          {!user && tier.id === 1
+                            ? "FREE"
+                            : `${tier.cost} mins`}
+                        </div>
                       </div>
-                      <div className="text-xs font-bold uppercase tracking-wider bg-white/50 px-2 py-1 rounded-md">
-                        {tier.cost} mins
-                      </div>
+                      <p className="text-sm opacity-90 leading-relaxed pr-8">
+                        {tier.desc}
+                      </p>
                     </div>
-                    <p className="text-sm opacity-90 leading-relaxed pr-8">
-                      {tier.desc}
-                    </p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
+            {/* Dynamic Error State with Upsell */}
             {error && (
-              <div className="p-3 bg-red-50 text-red-600 text-sm font-medium rounded-xl border border-red-100">
-                {error}
+              <div className="p-4 bg-red-50 text-red-700 text-sm font-medium rounded-xl border border-red-100 flex flex-col items-start gap-3">
+                <p>{error}</p>
+                {error.includes("Sign up for a free account") && (
+                  <button
+                    type="button"
+                    onClick={() => router.push("/login")}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-bold shadow-sm transition"
+                  >
+                    Create Free Account
+                  </button>
+                )}
+                {error.includes("Please top up") && (
+                  <button
+                    type="button"
+                    onClick={() => router.push("/dashboard")} // Sending them back to dashboard to buy minutes
+                    className="bg-gray-900 hover:bg-black text-white px-4 py-2 rounded-lg font-bold shadow-sm transition"
+                  >
+                    Top Up Minutes
+                  </button>
+                )}
               </div>
             )}
 
@@ -259,8 +311,9 @@ export default function ResumeOptimizerPage() {
                 </>
               ) : (
                 <>
-                  Generate Word Document (Deducts{" "}
-                  {TIERS.find((t) => t.id === selectedTier)?.cost} mins)
+                  {!user && selectedTier === 1
+                    ? "Generate Free Word Document"
+                    : `Generate Word Document (Deducts ${TIERS.find((t) => t.id === selectedTier)?.cost} mins)`}
                 </>
               )}
             </button>

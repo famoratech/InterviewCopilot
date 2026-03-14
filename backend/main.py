@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List, Optional
+from datetime import datetime, timedelta
 
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
@@ -326,34 +327,63 @@ async def stripe_webhook(request: Request):
 # ==========================================
 #         AI Optimizer Endpoint
 # ==========================================
+free_tier_usage = {}
+
 @app.post("/optimize")
 async def optimize_resume(
-    user_id: str = Form(...),
+    request: Request,
     job_description: str = Form(...),
-    tier: int = Form(...), # 1, 2, or 3
+    tier: int = Form(...), 
     resume_text: str = Form(""),
-    resume_file: UploadFile = File(None)
+    resume_file: UploadFile = File(None),
+    user_id: str = Form("guest") 
 ):
-    # 1. Determine the cost and deduct balance
-    cost_map = {1: 10, 2: 25, 3: 50}
-    minutes_to_deduct = cost_map.get(tier, 10)
+    # 1. Billing & Access Control Logic
+    curr_bal = 0
+    now = datetime.now()
 
-    try:
-        curr_res = await asyncio.to_thread(
-            lambda: supabase.table("user_credits").select("balance_minutes").eq("user_id", user_id).single().execute()
-        )
-        curr_bal = curr_res.data.get("balance_minutes", 0)
+    if tier == 1:
+        # --- FREE TIER LOGIC (Tier 1) ---
+        identifier = request.client.host if user_id == "guest" else user_id
         
-        if curr_bal < minutes_to_deduct:
-            raise HTTPException(status_code=402, detail="Insufficient minutes.")
+        # Check if they have used their 1 free optimization in the last 24 hours
+        if identifier in free_tier_usage:
+            last_used = free_tier_usage[identifier]
+            if now < last_used + timedelta(days=1):
+                # They are locked out!
+                if user_id == "guest":
+                    raise HTTPException(status_code=429, detail="Guest limit reached (1 per day). Please sign up for another free optimization!")
+                else:
+                    raise HTTPException(status_code=402, detail="Free limit reached (1 per day). Please top up your minutes to continue optimizing.")
+        
+        # If they pass, record their usage for today
+        free_tier_usage[identifier] = now
+        print(f"Free Tier 1 used by: {identifier}")
+
+    else:
+        # --- PAID TIER LOGIC (Tiers 2 & 3) ---
+        if user_id == "guest":
+            raise HTTPException(status_code=401, detail="Please log in to use advanced tiers.")
             
-        new_bal = curr_bal - minutes_to_deduct
-        await asyncio.to_thread(
-            lambda: supabase.table("user_credits").update({"balance_minutes": new_bal}).eq("user_id", user_id).execute()
-        )
-    except Exception as e:
-        logger.error(f"Failed to check/deduct balance: {e}")
-        raise HTTPException(status_code=500, detail="Database error.")
+        cost_map = {2: 25, 3: 50}
+        minutes_to_deduct = cost_map.get(tier, 25)
+
+        try:
+            curr_res = await asyncio.to_thread(
+                lambda: supabase.table("user_credits").select("balance_minutes").eq("user_id", user_id).single().execute()
+            )
+            curr_bal = curr_res.data.get("balance_minutes", 0)
+            
+            if curr_bal < minutes_to_deduct:
+                raise HTTPException(status_code=402, detail=f"You need {minutes_to_deduct} minutes for this tier. Please top up.")
+                
+            new_bal = curr_bal - minutes_to_deduct
+            await asyncio.to_thread(
+                lambda: supabase.table("user_credits").update({"balance_minutes": new_bal}).eq("user_id", user_id).execute()
+            )
+        except Exception as e:
+            logger.error(f"Failed to check/deduct balance: {e}")
+            raise HTTPException(status_code=500, detail="Database error.")
 
     # 2. Extract Text
     final_resume_text = resume_text
