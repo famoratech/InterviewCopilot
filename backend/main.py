@@ -3,11 +3,17 @@ import logging
 import asyncio
 import json
 import io
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Request
+import re
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Request,HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List, Optional
+
+from docx import Document
+from docx.shared import Pt, Inches, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 # --- SUPABASE & STRIPE ---
 from supabase import create_client, Client
@@ -48,6 +54,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-ATS-Score", "X-Missing-Keywords", "X-Items-Removed"]
 )
 
 # --- IN-MEMORY SESSION MANAGEMENT ---
@@ -113,6 +120,91 @@ def get_difficulty_instruction(level: str):
         return "Ask very difficult, deep technical questions and edge cases. Be skeptical."
     return "Ask standard questions."
 
+def add_markdown_paragraph(doc_element, text: str, style=None):
+    """
+    Helper function to parse **bold** markdown and add it to a python-docx paragraph.
+    """
+    p = doc_element.add_paragraph(style=style)
+    # Split the text by the markdown bold syntax **
+    parts = re.split(r'(\*\*.*?\*\*)', text)
+    
+    for part in parts:
+        if part.startswith('**') and part.endswith('**'):
+            # It's bold! Remove the asterisks and add as bold run
+            clean_text = part[2:-2]
+            p.add_run(clean_text).bold = True
+        else:
+            # Normal text
+            p.add_run(part)
+    return p
+
+def create_optimized_word_doc(ai_data: dict, original_text: str) -> io.BytesIO:
+    doc = Document()
+    
+    for section in doc.sections:
+        section.top_margin, section.bottom_margin = Inches(1), Inches(1)
+        section.left_margin, section.right_margin = Inches(1), Inches(1)
+
+    # 1. Contact Info
+    name = ai_data.get("contact_info", {}).get("name", "Name Not Found")
+    contact_str = ai_data.get("contact_info", {}).get("contact_string", "Contact Info Not Found")
+    
+    header_p = doc.add_paragraph()
+    header_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    name_run = header_p.add_run(name)
+    name_run.bold = True
+    name_run.font.size = Pt(24)
+    name_run.font.color.rgb = RGBColor(31, 73, 125)
+    
+    contact = doc.add_paragraph(contact_str)
+    contact.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    line = doc.add_paragraph()
+    line.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    line.add_run("_" * 50).font.color.rgb = RGBColor(180, 180, 180)
+
+    # 2. Summary
+    if ai_data.get("summary"):
+        doc.add_heading('PROFESSIONAL PROFILE', level=1).runs[0].font.color.rgb = RGBColor(31, 73, 125)
+        add_markdown_paragraph(doc, ai_data["summary"])
+
+    # 3. Skills
+    if ai_data.get("skills"):
+        doc.add_heading('CORE COMPETENCIES & SKILLS', level=1).runs[0].font.color.rgb = RGBColor(31, 73, 125)
+        for skill in ai_data["skills"]:
+            add_markdown_paragraph(doc, skill, style='List Bullet')
+
+    # 4. Experience (The AI will no longer drop jobs here!)
+    if ai_data.get("experience"):
+        doc.add_heading('PROFESSIONAL EXPERIENCE', level=1).runs[0].font.color.rgb = RGBColor(31, 73, 125)
+        for job in ai_data["experience"]:
+            p = doc.add_paragraph()
+            if job.get("title"): p.add_run(f"{job['title']}").bold = True
+            if job.get("company"): p.add_run(f" | {job['company']}")
+            if job.get("dates"): p.add_run(f" | {job['dates']}")
+            
+            for bullet in job.get("bullets", []):
+                add_markdown_paragraph(doc, bullet, style='List Bullet')
+
+    # 5. Education & Certifications
+    if ai_data.get("certifications"):
+        doc.add_heading('CERTIFICATIONS & REQUIREMENTS', level=1).runs[0].font.color.rgb = RGBColor(31, 73, 125)
+        for cert in ai_data["certifications"]:
+            add_markdown_paragraph(doc, cert, style='List Bullet')
+
+    # 6. Tier 3 Gap Bridger
+    if ai_data.get("gap_bridger_project") and ai_data.get("gap_bridger_bullets"):
+        doc.add_heading('TECHNICAL PROJECTS & UPSKILLING', level=1).runs[0].font.color.rgb = RGBColor(31, 73, 125)
+        p = doc.add_paragraph()
+        p.add_run(f"{ai_data['gap_bridger_project']}").bold = True
+        for bullet in ai_data["gap_bridger_bullets"]:
+            add_markdown_paragraph(doc, bullet, style='List Bullet')
+
+    doc_io = io.BytesIO()
+    doc.save(doc_io)
+    doc_io.seek(0)
+    
+    return doc_io
 
 # --- DATA MODELS ---
 class CheckoutRequest(BaseModel):
@@ -231,7 +323,175 @@ async def stripe_webhook(request: Request):
                 logger.error(f"❌ Failed to update Supabase: {e}")
 
     return {"status": "success"}
+# ==========================================
+#         AI Optimizer Endpoint
+# ==========================================
+@app.post("/optimize")
+async def optimize_resume(
+    user_id: str = Form(...),
+    job_description: str = Form(...),
+    tier: int = Form(...), # 1, 2, or 3
+    resume_text: str = Form(""),
+    resume_file: UploadFile = File(None)
+):
+    # 1. Determine the cost and deduct balance
+    cost_map = {1: 10, 2: 25, 3: 50}
+    minutes_to_deduct = cost_map.get(tier, 10)
 
+    try:
+        curr_res = await asyncio.to_thread(
+            lambda: supabase.table("user_credits").select("balance_minutes").eq("user_id", user_id).single().execute()
+        )
+        curr_bal = curr_res.data.get("balance_minutes", 0)
+        
+        if curr_bal < minutes_to_deduct:
+            raise HTTPException(status_code=402, detail="Insufficient minutes.")
+            
+        new_bal = curr_bal - minutes_to_deduct
+        await asyncio.to_thread(
+            lambda: supabase.table("user_credits").update({"balance_minutes": new_bal}).eq("user_id", user_id).execute()
+        )
+    except Exception as e:
+        logger.error(f"Failed to check/deduct balance: {e}")
+        raise HTTPException(status_code=500, detail="Database error.")
+
+    # 2. Extract Text
+    final_resume_text = resume_text
+    if resume_file:
+        content = await resume_file.read()
+        final_resume_text = extract_text_from_file(content, resume_file.filename)
+
+    # ==========================================
+    # STEP 1: THE EXTRACTOR (Data Fidelity Only)
+    # ==========================================
+    extractor_prompt = f"""
+    You are an expert data extraction algorithm. 
+    Your ONLY job is to convert the following raw resume text into a perfectly structured JSON object.
+    
+    CRITICAL RULES:
+    1. Do NOT rewrite, summarize, or optimize anything. Copy the text exactly as it appears.
+    2. You MUST identify EVERY distinct job in the "PROFESSIONAL EXPERIENCE" section. Look for patterns like "Title | Company | Location | Dates". 
+    3. If there are multiple jobs, you MUST create an object for each one in the `experience` array. Do NOT combine them.
+    
+    RAW RESUME TEXT:
+    {final_resume_text[:4000]}
+    
+    Return ONLY a valid JSON object matching this schema:
+    {{
+      "contact_info": {{"name": "...", "contact_string": "..."}},
+      "summary": "...",
+      "skills": ["...", "..."],
+      "experience": [
+          {{
+            "title": "...",
+            "company": "...",
+            "dates": "...",
+            "bullets": ["...", "..."]
+          }}
+      ],
+      "certifications": ["...", "..."]
+    }}
+    """
+
+    try:
+        extractor_response = coach_llm_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": extractor_prompt}],
+            temperature=0.0, # Zero temperature for perfect extraction
+            response_format={"type": "json_object"}
+        )
+        extracted_data = json.loads(extractor_response.choices[0].message.content)
+        
+        # Debugging Print: See if Step 1 worked!
+        print(f"\n[STEP 1] Jobs Extracted: {len(extracted_data.get('experience', []))}\n")
+        
+    except Exception as e:
+        logger.error(f"Extractor failed: {e}")
+        await asyncio.to_thread(lambda: supabase.table("user_credits").update({"balance_minutes": curr_bal}).eq("user_id", user_id).execute())
+        raise HTTPException(status_code=500, detail="Failed to parse resume.")
+
+    # ==========================================
+    # STEP 2: THE OPTIMIZER (Rewriting Only)
+    # ==========================================
+    tier_instructions = ""
+    if tier == 1:
+        tier_instructions = "- TIER 1: Make minor tweaks to inject keywords from the Job Description. Fix grammar. Do NOT alter the core meaning of the bullets."
+    elif tier == 2:
+        tier_instructions = "- TIER 2: Heavily rewrite the bullet points under Experience. Use strong action verbs, infer high-level responsibilities, and quantify achievements."
+    elif tier == 3:
+        tier_instructions = "- TIER 3: Do everything in Tier 2. PLUS, identify 1-2 critical skills missing from their resume that the JD requires. Generate a realistic 'Independent Project'."
+
+    optimizer_prompt = f"""
+    You are an Elite Career Coach. 
+    I have already extracted the candidate's resume into a structured JSON format. 
+    Your job is to optimize this JSON structure based on the Job Description provided.
+
+    Job Description:
+    {job_description[:3000]}
+
+    Extracted Resume JSON:
+    {json.dumps(extracted_data)}
+
+    CRITICAL RULES:
+    1. You MUST process and return EVERY single job present in the `experience` array I provided you. If I gave you 2 jobs, you MUST return 2 jobs.
+    2. Use **markdown bolding** to highlight key skills and metrics within the bullet points.
+    3. {tier_instructions}
+    4. TRANSPARENCY: If you remove ANY bullet points, skills, or sentences from the Extracted JSON during your optimization, you MUST list them in `items_removed_for_optimization`.
+
+    Return ONLY a valid JSON object matching this schema:
+    {{
+      "ats_match_score": 85,
+      "missing_keywords": ["Skill 1", "Skill 2"],
+      "items_removed_for_optimization": [
+         {{"item": "Specific bullet removed", "reason": "Irrelevant to JD"}}
+      ],
+      "contact_info": {{"name": "...", "contact_string": "..."}},
+      "summary": "A highly tailored professional summary. Use **bolding**.",
+      "skills": ["**Skill:** Description..."],
+      "experience": [
+          {{
+            "title": "...",
+            "company": "...",
+            "dates": "...",
+            "bullets": ["**Action verb** describing achievement..."]
+          }}
+      ],
+      "certifications": ["..."],
+      "gap_bridger_project": "Project Title (if Tier 3, else empty string)",
+      "gap_bridger_bullets": []
+    }}
+    """
+
+    try:
+        optimizer_response = coach_llm_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": optimizer_prompt}],
+            temperature=0.3,
+            response_format={"type": "json_object"}
+        )
+        final_ai_data = json.loads(optimizer_response.choices[0].message.content)
+        
+        # Debugging Print: See if Step 2 kept them!
+        print(f"\n[STEP 2] Jobs Optimized: {len(final_ai_data.get('experience', []))}\n")
+
+    except Exception as e:
+        logger.error(f"Optimizer failed: {e}")
+        await asyncio.to_thread(lambda: supabase.table("user_credits").update({"balance_minutes": curr_bal}).eq("user_id", user_id).execute())
+        raise HTTPException(status_code=500, detail="AI Generation failed.")
+
+    # 3. Generate the Word Document
+    doc_io = create_optimized_word_doc(final_ai_data, final_resume_text)
+
+    # 4. Return the file and headers
+    headers = {
+        'Content-Disposition': 'attachment; filename="Optimized_Resume.docx"',
+        'X-ATS-Score': str(final_ai_data.get("ats_match_score", 0)),
+        'X-Missing-Keywords': json.dumps(final_ai_data.get("missing_keywords", [])),
+        'X-Items-Removed': json.dumps(final_ai_data.get("items_removed_for_optimization", [])),
+        'Access-Control-Expose-Headers': 'X-ATS-Score, X-Missing-Keywords, X-Items-Removed' 
+    }
+
+    return StreamingResponse(doc_io, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers=headers)
 
 # ==========================================
 #         AI COACH ENDPOINTS

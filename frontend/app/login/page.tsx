@@ -1,0 +1,124 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
+import Auth from "@/components/Auth"; // Assuming your Auth component is here
+
+export default function LoginPage() {
+  const router = useRouter();
+  const [session, setSession] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRecovering, setIsRecovering] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [updateMessage, setUpdateMessage] = useState("");
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setIsLoading(false);
+      // Redirect if already logged in
+      if (session) router.push("/dashboard");
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      setSession(session);
+
+      // Redirect on login
+      if (session && event === "SIGNED_IN") {
+        router.push("/dashboard");
+      }
+
+      if (event === "PASSWORD_RECOVERY") {
+        setIsRecovering(true);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [router]);
+
+  const handlePasswordUpdate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+
+    if (error) {
+      setUpdateMessage(`Error: ${error.message}`);
+    } else {
+      setUpdateMessage("Password updated successfully!");
+      setTimeout(() => {
+        setIsRecovering(false);
+        router.push("/dashboard");
+      }, 2000);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    );
+  }
+
+  if (isRecovering) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 p-4 font-sans text-gray-800">
+        <div className="bg-white p-8 rounded-2xl shadow-lg border border-gray-100 w-full max-w-md">
+          <h2 className="text-2xl font-bold mb-2 text-center">
+            Set New Password
+          </h2>
+          <p className="text-gray-500 text-sm text-center mb-6">
+            Enter a strong password for your account.
+          </p>
+
+          <form onSubmit={handlePasswordUpdate} className="space-y-4">
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="w-full p-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+              placeholder="New password..."
+              required
+            />
+            {updateMessage && (
+              <p className="text-sm text-center text-blue-600 font-medium">
+                {updateMessage}
+              </p>
+            )}
+            <button
+              type="submit"
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl transition shadow-md"
+            >
+              Update Password
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="min-h-screen bg-gray-50 p-6 flex flex-col items-center justify-center relative">
+        {/* Left-aligned Back Arrow */}
+        <div className="absolute top-6 left-6">
+          <button
+            onClick={() => router.push("/")}
+            className="text-gray-500 hover:text-gray-900 flex items-center gap-2 transition w-fit font-medium text-sm"
+          >
+            ← Back to Home
+          </button>
+        </div>
+
+        {/* The Auth Component (Your original wide design) */}
+        <div className="w-full max-w-md">
+          <Auth onLogin={() => router.push("/dashboard")} />
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}

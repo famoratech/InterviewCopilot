@@ -36,6 +36,9 @@ export default function LiveTranscript({ mode }: LiveTranscriptProps) {
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
 
+  // 🥷 NINJA MODE STATE
+  const [ninjaMode, setNinjaMode] = useState(false);
+
   // Setup Form State
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [jobDescription, setJobDescription] = useState("");
@@ -82,10 +85,12 @@ export default function LiveTranscript({ mode }: LiveTranscriptProps) {
     return () => clearInterval(interval);
   }, [isConnected]);
 
-  // Auto-scroll
+  // Auto-scroll (Disabled if Ninja Mode is active so it doesn't jump the screen)
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs]);
+    if (!ninjaMode) {
+      logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [logs, ninjaMode]);
 
   useEffect(() => {
     const fetchCredits = async () => {
@@ -353,6 +358,7 @@ export default function LiveTranscript({ mode }: LiveTranscriptProps) {
     setIsConnected(false);
     setIsConnecting(false);
     setIsPaused(false);
+    setNinjaMode(false); // Reset ninja mode on cleanup
     wsRef.current = null;
     mediaRecorderRef.current?.stop();
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -475,192 +481,237 @@ export default function LiveTranscript({ mode }: LiveTranscriptProps) {
 
   // --- RENDER (STEP 2: INTERVIEW) ---
   return (
-    <div className="flex flex-col w-full max-w-4xl mx-auto h-screen p-4 md:p-6 font-sans text-gray-800 bg-gray-50">
-      {/* HEADER & CONTROLS */}
-      <div className="bg-white p-4 md:p-5 rounded-2xl shadow-sm border border-gray-200 flex flex-col sm:flex-row justify-between items-center gap-4 mb-4 z-10 mt-safe">
-        <div className="w-full sm:w-auto flex justify-between sm:block">
+    <div
+      className={`transition-all duration-300 ease-in-out flex flex-col font-sans text-gray-800 ${
+        ninjaMode
+          ? "fixed bottom-8 right-8 z-50 w-72" // Ninja widget sizing
+          : "w-full max-w-4xl mx-auto h-[85vh] p-4 md:p-6 bg-gray-50" // Normal sizing
+      }`}
+    >
+      {ninjaMode ? (
+        /* 🥷 NINJA MODE UI (Stealth Widget) */
+        <div className="bg-white/95 backdrop-blur-md p-4 rounded-2xl shadow-2xl border border-gray-200 flex items-center justify-between animate-in slide-in-from-bottom-4">
           <div className="flex items-center gap-3">
-            <h2 className="text-lg md:text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">
-              Interview Copilot
-            </h2>
-            {timeRemaining !== null && (
-              <span
-                className={`text-xs font-bold px-2.5 py-1 rounded-md border shadow-sm transition-colors ${timeRemaining > 780 ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-red-50 text-red-700 border-red-200"}`}
-              >
-                ⏳ {formatTime(timeRemaining)}
+            <div className="relative flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-tight">
+                Listening
               </span>
-            )}
-            <button
-              onClick={handleUpgrade}
-              className={`text-xs font-bold px-2.5 py-1 rounded-md transition-all shadow-sm hidden md:block ${timeRemaining !== null && timeRemaining < 300 ? "bg-red-600 hover:bg-red-700 text-white animate-pulse" : "bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-200"}`}
-            >
-              + Time
-            </button>
+              <span className="text-xs font-bold text-gray-800 leading-tight">
+                Copilot Active
+              </span>
+            </div>
           </div>
-
-          <div className="flex items-center gap-2 mt-1 h-4">
-            {isConnected ? (
-              <div className="flex items-end gap-[2px] h-3">
-                <div className="w-1 bg-green-500 rounded-full animate-[bounce_1s_infinite_0ms] h-full"></div>
-                <div className="w-1 bg-green-500 rounded-full animate-[bounce_1.2s_infinite_100ms] h-2/3"></div>
-                <div className="w-1 bg-green-500 rounded-full animate-[bounce_0.9s_infinite_200ms] h-4/5"></div>
-                <div className="w-1 bg-green-500 rounded-full animate-[bounce_1.1s_infinite_300ms] h-full"></div>
-              </div>
-            ) : (
-              <div className="w-2 h-2 rounded-full bg-gray-300" />
-            )}
-            <p className="text-xs text-gray-500 font-medium">
-              {isConnected ? "Listening..." : "Ready"}
-            </p>
-          </div>
-        </div>
-
-        {!isConnected ? (
           <button
-            onClick={startInterview}
-            disabled={isConnecting}
-            className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-semibold shadow-md transition disabled:opacity-50 disabled:cursor-not-allowed text-sm md:text-base"
+            onClick={() => setNinjaMode(false)}
+            className="text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors border border-blue-100"
           >
-            {isConnecting
-              ? "Connecting..."
-              : `Start ${mode === "video" ? "Video" : "Phone"} Interview`}
+            Expand ↗
           </button>
-        ) : (
-          <div className="flex gap-2 w-full sm:w-auto">
-            <button
-              onClick={togglePause}
-              className={`flex-1 sm:flex-none px-4 md:px-6 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2 text-white shadow-sm text-sm md:text-base ${
-                isPaused
-                  ? "bg-green-600 hover:bg-green-700"
-                  : "bg-yellow-500 hover:bg-yellow-600"
-              }`}
-            >
-              {isPaused ? "▶ Resume" : "⏸ Pause"}
-            </button>
+        </div>
+      ) : (
+        /* 📺 STANDARD FULL UI */
+        <>
+          {/* HEADER & CONTROLS */}
+          <div className="bg-white p-4 md:p-5 rounded-2xl shadow-sm border border-gray-200 flex flex-col sm:flex-row justify-between items-center gap-4 mb-4 z-10 mt-safe shrink-0">
+            <div className="w-full sm:w-auto flex justify-between sm:block">
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg md:text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">
+                  Interview Copilot
+                </h2>
+                {timeRemaining !== null && (
+                  <span
+                    className={`text-xs font-bold px-2.5 py-1 rounded-md border shadow-sm transition-colors ${timeRemaining > 780 ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-red-50 text-red-700 border-red-200"}`}
+                  >
+                    ⏳ {formatTime(timeRemaining)}
+                  </span>
+                )}
+                <button
+                  onClick={handleUpgrade}
+                  className={`text-xs font-bold px-2.5 py-1 rounded-md transition-all shadow-sm hidden md:block ${timeRemaining !== null && timeRemaining < 300 ? "bg-red-600 hover:bg-red-700 text-white animate-pulse" : "bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-200"}`}
+                >
+                  + Time
+                </button>
+              </div>
 
-            <button
-              onClick={stopInterview}
-              className="flex-1 sm:flex-none bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 px-4 md:px-8 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2 shadow-sm text-sm md:text-base"
-            >
-              Stop
-            </button>
-          </div>
-        )}
-      </div>
+              <div className="flex items-center gap-2 mt-1 h-4">
+                {isConnected ? (
+                  <div className="flex items-end gap-[2px] h-3">
+                    <div className="w-1 bg-green-500 rounded-full animate-[bounce_1s_infinite_0ms] h-full"></div>
+                    <div className="w-1 bg-green-500 rounded-full animate-[bounce_1.2s_infinite_100ms] h-2/3"></div>
+                    <div className="w-1 bg-green-500 rounded-full animate-[bounce_0.9s_infinite_200ms] h-4/5"></div>
+                    <div className="w-1 bg-green-500 rounded-full animate-[bounce_1.1s_infinite_300ms] h-full"></div>
+                  </div>
+                ) : (
+                  <div className="w-2 h-2 rounded-full bg-gray-300" />
+                )}
+                <p className="text-xs text-gray-500 font-medium">
+                  {isConnected ? "Listening..." : "Ready"}
+                </p>
+              </div>
+            </div>
 
-      {/* MODE SPECIFIC INSTRUCTIONS / TIPS */}
-      {!isConnected && !isConnecting && (
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800 shadow-sm mb-4">
-          <strong>
-            How to use ({mode === "video" ? "Video Mode" : "Phone Mode"}):
-          </strong>
-          <ul className="list-disc pl-5 mt-2 space-y-1">
-            <li>
-              Click <b>Start Interview</b>.
-            </li>
-            {mode === "video" ? (
-              <>
-                <li>
-                  Select the <b>Tab</b> with the meeting audio.
-                </li>
-                <li>
-                  <span className="bg-yellow-200 px-1 rounded text-black font-bold">
-                    IMPORTANT:
-                  </span>{" "}
-                  Check <b>"Share system audio"</b>.
-                </li>
-              </>
+            {/* CONTROLS */}
+            {!isConnected ? (
+              <button
+                onClick={startInterview}
+                disabled={isConnecting}
+                className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-semibold shadow-md transition disabled:opacity-50 disabled:cursor-not-allowed text-sm md:text-base"
+              >
+                {isConnecting
+                  ? "Connecting..."
+                  : `Start ${mode === "video" ? "Video" : "Phone"} Interview`}
+              </button>
             ) : (
-              <>
-                <li>
-                  Put your phone on <b>Speaker</b>.
-                </li>
-                <li>Place it near this device's microphone.</li>
-                <li>Allow microphone access when prompted.</li>
-              </>
+              <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap sm:flex-nowrap">
+                {/* 🥷 NINJA TOGGLE BUTTON */}
+                <button
+                  onClick={() => setNinjaMode(true)}
+                  className="flex-1 sm:flex-none text-xs font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 px-3 py-3 rounded-xl transition flex justify-center items-center gap-1.5 border border-gray-200 shadow-sm whitespace-nowrap"
+                  title="Hide UI for Screen Sharing"
+                >
+                  🥷 Ninja Mode
+                </button>
+
+                <button
+                  onClick={togglePause}
+                  className={`flex-1 sm:flex-none px-4 md:px-6 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2 text-white shadow-sm text-sm md:text-base ${
+                    isPaused
+                      ? "bg-green-600 hover:bg-green-700"
+                      : "bg-yellow-500 hover:bg-yellow-600"
+                  }`}
+                >
+                  {isPaused ? "▶ Resume" : "⏸ Pause"}
+                </button>
+
+                <button
+                  onClick={stopInterview}
+                  className="flex-1 sm:flex-none bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 px-4 md:px-8 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2 shadow-sm text-sm md:text-base"
+                >
+                  Stop
+                </button>
+              </div>
             )}
-          </ul>
-        </div>
-      )}
-
-      {/* PHONE MODE PRO TIP - THE ECHO SOLUTION */}
-      {isConnected && mode === "phone" && !isPaused && (
-        <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs md:text-sm p-2 rounded-lg text-center mb-2 animate-pulse">
-          💡 <strong>Tip:</strong> Tap <b>Pause</b> while YOU are speaking to
-          prevent the AI from analyzing your own voice.
-        </div>
-      )}
-
-      {/* MAIN CHAT AREA */}
-      <div className="flex-1 overflow-y-auto bg-white rounded-2xl border border-gray-200 p-4 space-y-4 md:space-y-6 shadow-sm relative">
-        {logs.length === 0 && isConnected && (
-          <div className="absolute inset-0 flex items-center justify-center text-gray-400">
-            <div className="text-center">
-              <span className="text-3xl block mb-2">🎙️</span>
-              <p className="text-sm">
-                Listening...{" "}
-                {mode === "phone"
-                  ? "ensure speakerphone is ON."
-                  : "speak into mic."}
-              </p>
-            </div>
           </div>
-        )}
 
-        {logs.map((log, i) => (
-          <div
-            key={i}
-            className={`flex flex-col w-full ${
-              log.type === "transcript" ? "items-end" : "items-start"
-            }`}
-          >
-            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 px-1">
-              {log.type === "transcript" ? "Interviewer" : "AI Copilot"}
-            </span>
-            <div
-              className={`max-w-[90%] md:max-w-[75%] p-3 md:p-4 rounded-2xl text-sm md:text-[15px] leading-relaxed shadow-sm ${
-                log.type === "transcript"
-                  ? "bg-blue-600 text-white rounded-tr-none"
-                  : "bg-gray-100 text-gray-800 border border-gray-200 rounded-tl-none"
-              }`}
-            >
-              <span>{log.text}</span>
-              {log.pending && (
-                <span className="opacity-70 italic">{log.pending}</span>
-              )}
-              {log.isStreaming && (
-                <span className="inline-block w-1.5 h-4 bg-blue-400 ml-1.5 animate-pulse align-middle" />
-              )}
+          {/* MODE SPECIFIC INSTRUCTIONS / TIPS */}
+          {!isConnected && !isConnecting && (
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800 shadow-sm mb-4 shrink-0">
+              <strong>
+                How to use ({mode === "video" ? "Video Mode" : "Phone Mode"}):
+              </strong>
+              <ul className="list-disc pl-5 mt-2 space-y-1">
+                <li>
+                  Click <b>Start Interview</b>.
+                </li>
+                {mode === "video" ? (
+                  <>
+                    <li>
+                      Select the <b>Tab</b> with the meeting audio.
+                    </li>
+                    <li>
+                      <span className="bg-yellow-200 px-1 rounded text-black font-bold">
+                        IMPORTANT:
+                      </span>{" "}
+                      Check <b>"Share system audio"</b>.
+                    </li>
+                  </>
+                ) : (
+                  <>
+                    <li>
+                      Put your phone on <b>Speaker</b>.
+                    </li>
+                    <li>Place it near this device's microphone.</li>
+                    <li>Allow microphone access when prompted.</li>
+                  </>
+                )}
+              </ul>
             </div>
-          </div>
-        ))}
-        <div ref={logsEndRef} className="h-4" />
-      </div>
+          )}
 
-      {/* UPGRADE MODAL */}
-      {showUpgradeModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl p-6 md:p-8 max-w-md w-full text-center border border-gray-100 relative overflow-hidden">
-            <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-500 to-indigo-600"></div>
-            <h2 className="text-2xl font-bold text-gray-900 mb-2">
-              Out of Minutes!
-            </h2>
-            <div className="space-y-3 mt-4">
-              <button
-                onClick={handleUpgrade}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl transition shadow-md"
+          {/* PHONE MODE PRO TIP - THE ECHO SOLUTION */}
+          {isConnected && mode === "phone" && !isPaused && (
+            <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs md:text-sm p-2 rounded-lg text-center mb-2 animate-pulse shrink-0">
+              💡 <strong>Tip:</strong> Tap <b>Pause</b> while YOU are speaking
+              to prevent the AI from analyzing your own voice.
+            </div>
+          )}
+
+          {/* MAIN CHAT AREA */}
+          <div className="flex-1 overflow-y-auto bg-white rounded-2xl border border-gray-200 p-4 space-y-4 md:space-y-6 shadow-sm relative scroll-smooth">
+            {logs.length === 0 && isConnected && (
+              <div className="absolute inset-0 flex items-center justify-center text-gray-400">
+                <div className="text-center">
+                  <span className="text-3xl block mb-2">🎙️</span>
+                  <p className="text-sm">
+                    Listening...{" "}
+                    {mode === "phone"
+                      ? "ensure speakerphone is ON."
+                      : "speak into mic."}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {logs.map((log, i) => (
+              <div
+                key={i}
+                className={`flex flex-col w-full ${
+                  log.type === "transcript" ? "items-end" : "items-start"
+                }`}
               >
-                Buy 2 Hours
-              </button>
-              <button
-                onClick={() => setShowUpgradeModal(false)}
-                className="w-full bg-gray-50 hover:bg-gray-100 text-gray-600 font-semibold py-3.5 rounded-xl"
-              >
-                Maybe later
-              </button>
-            </div>
+                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 px-1">
+                  {log.type === "transcript" ? "Interviewer" : "AI Copilot"}
+                </span>
+                <div
+                  className={`max-w-[90%] md:max-w-[75%] p-3 md:p-4 rounded-2xl text-[15px] leading-relaxed shadow-sm ${
+                    log.type === "transcript"
+                      ? "bg-blue-600 text-white rounded-tr-none"
+                      : "bg-gray-100 text-gray-800 border border-gray-200 rounded-tl-none font-medium"
+                  }`}
+                >
+                  <span>{log.text}</span>
+                  {log.pending && (
+                    <span className="opacity-70 italic">{log.pending}</span>
+                  )}
+                  {log.isStreaming && (
+                    <span className="inline-block w-1.5 h-4 bg-blue-400 ml-1.5 animate-pulse align-middle" />
+                  )}
+                </div>
+              </div>
+            ))}
+            <div ref={logsEndRef} className="h-4" />
           </div>
-        </div>
+
+          {/* UPGRADE MODAL */}
+          {showUpgradeModal && (
+            <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl p-6 md:p-8 max-w-md w-full text-center border border-gray-100 relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-500 to-indigo-600"></div>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">
+                  Out of Minutes!
+                </h2>
+                <div className="space-y-3 mt-4">
+                  <button
+                    onClick={handleUpgrade}
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl transition shadow-md"
+                  >
+                    Buy 2 Hours
+                  </button>
+                  <button
+                    onClick={() => setShowUpgradeModal(false)}
+                    className="w-full bg-gray-50 hover:bg-gray-100 text-gray-600 font-semibold py-3.5 rounded-xl"
+                  >
+                    Maybe later
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
