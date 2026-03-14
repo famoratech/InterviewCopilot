@@ -243,7 +243,12 @@ export default function ResumeOptimizerPage() {
                         }
                         setSelectedTier(tier.id);
                       }}
-                      className={`relative p-4 rounded-2xl border transition-all ${isLocked ? "bg-gray-50 border-gray-200 cursor-not-allowed opacity-60" : tier.color + " cursor-pointer"} ${selectedTier === tier.id ? tier.activeColor : "hover:opacity-100"}`}
+                      // UPDATED: Adjusted opacity and background for better readability when locked
+                      className={`relative p-4 rounded-2xl border transition-all ${
+                        isLocked
+                          ? "bg-gray-100 border-gray-300 cursor-not-allowed opacity-90"
+                          : tier.color + " cursor-pointer"
+                      } ${selectedTier === tier.id ? tier.activeColor : "hover:opacity-100"}`}
                     >
                       {tier.badge && !isLocked && (
                         <span className="absolute -top-3 right-4 bg-gray-900 text-white text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider shadow-sm">
@@ -251,21 +256,33 @@ export default function ResumeOptimizerPage() {
                         </span>
                       )}
                       {isLocked && (
-                        <span className="absolute -top-3 right-4 bg-red-100 text-red-700 text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider shadow-sm flex items-center gap-1">
+                        <span className="absolute -top-3 right-4 bg-gray-200 text-gray-600 border border-gray-300 text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider shadow-sm flex items-center gap-1">
                           🔒 Login Required
                         </span>
                       )}
                       <div className="flex justify-between items-start mb-1">
-                        <div className="font-bold flex items-center gap-2">
-                          <span>{tier.icon}</span> {tier.name}
+                        <div
+                          className={`font-bold flex items-center gap-2 ${isLocked ? "text-gray-600" : ""}`}
+                        >
+                          <span
+                            className={isLocked ? "grayscale opacity-70" : ""}
+                          >
+                            {tier.icon}
+                          </span>{" "}
+                          {tier.name}
                         </div>
-                        <div className="text-xs font-bold uppercase tracking-wider bg-white/50 px-2 py-1 rounded-md">
+                        <div
+                          className={`text-xs font-bold uppercase tracking-wider px-2 py-1 rounded-md ${isLocked ? "bg-gray-200 text-gray-500" : "bg-white/50"}`}
+                        >
                           {!user && tier.id === 1
                             ? "FREE"
                             : `${tier.cost} mins`}
                         </div>
                       </div>
-                      <p className="text-sm opacity-90 leading-relaxed pr-8">
+                      {/* UPDATED: Darker text color for description when locked */}
+                      <p
+                        className={`text-sm leading-relaxed pr-8 ${isLocked ? "text-gray-600" : "opacity-90"}`}
+                      >
                         {tier.desc}
                       </p>
                     </div>
@@ -310,10 +327,11 @@ export default function ResumeOptimizerPage() {
                   Rewriting Resume...
                 </>
               ) : (
+                // UPDATED: Button Text
                 <>
                   {!user && selectedTier === 1
-                    ? "Generate Free Word Document"
-                    : `Generate Word Document (Deducts ${TIERS.find((t) => t.id === selectedTier)?.cost} mins)`}
+                    ? "Generate Free ATS Resume"
+                    : `Generate ATS Resume (Deducts ${TIERS.find((t) => t.id === selectedTier)?.cost} mins)`}
                 </>
               )}
             </button>
