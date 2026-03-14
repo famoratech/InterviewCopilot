@@ -52,6 +52,7 @@ export default function ResumeOptimizerPage() {
   const [jobDescription, setJobDescription] = useState("");
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hasUsedFreeGuestTier, setHasUsedFreeGuestTier] = useState(false);
 
   // Results State
   const [atsScore, setAtsScore] = useState<string | null>(null);
@@ -67,6 +68,12 @@ export default function ResumeOptimizerPage() {
       const {
         data: { session },
       } = await supabase.auth.getSession();
+      // Check if they already used the free tier on this browser
+      if (typeof window !== "undefined") {
+        const guestUsage = localStorage.getItem("interview_copilot_guest_used");
+        if (guestUsage) setHasUsedFreeGuestTier(true);
+      }
+
       if (session) {
         setUser(session.user);
         const { data } = await supabase
@@ -145,6 +152,12 @@ export default function ResumeOptimizerPage() {
       link.remove();
       window.URL.revokeObjectURL(downloadUrl);
 
+      // === NEW: DROP THE LOCAL STORAGE FLAG ===
+      if (!user && selectedTier === 1) {
+        localStorage.setItem("interview_copilot_guest_used", "true");
+        setHasUsedFreeGuestTier(true);
+      }
+
       // Deduct locally for UI speed (only if logged in and using paid tier)
       if (user && selectedTier > 1 && timeRemaining !== null) {
         const cost = TIERS.find((t) => t.id === selectedTier)?.cost || 25;
@@ -220,7 +233,7 @@ export default function ResumeOptimizerPage() {
                 value={jobDescription}
                 onChange={(e) => setJobDescription(e.target.value)}
                 placeholder="Paste the requirements and responsibilities here..."
-                className="w-full p-4 border border-gray-200 rounded-xl h-40 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none bg-gray-50 focus:bg-white transition-colors"
+                className="w-full p-4 border border-gray-200 rounded-xl h-40 text-sm text-gray-900 font-medium placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500 outline-none resize-none bg-white focus:bg-blue-50/30 transition-colors shadow-inner"
               />
             </div>
 
@@ -317,7 +330,10 @@ export default function ResumeOptimizerPage() {
             )}
 
             <button
-              type="submit"
+              type={hasUsedFreeGuestTier && !user ? "button" : "submit"}
+              onClick={() => {
+                if (hasUsedFreeGuestTier && !user) router.push("/login");
+              }}
               disabled={isOptimizing}
               className="w-full bg-gray-900 hover:bg-black text-white font-bold py-4 rounded-xl transition shadow-xl hover:-translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex justify-center items-center gap-2"
             >
@@ -326,8 +342,9 @@ export default function ResumeOptimizerPage() {
                   <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
                   Rewriting Resume...
                 </>
+              ) : hasUsedFreeGuestTier && !user ? (
+                "Sign up to generate another resume"
               ) : (
-                // UPDATED: Button Text
                 <>
                   {!user && selectedTier === 1
                     ? "Generate Free ATS Resume"
