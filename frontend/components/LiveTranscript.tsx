@@ -232,17 +232,39 @@ export default function LiveTranscript({ mode }: LiveTranscriptProps) {
         setIsConnected(true);
         setIsConnecting(false);
 
-        const mediaRecorder = new MediaRecorder(new MediaStream([audioTrack]), {
-          mimeType: "audio/webm",
-        });
-        mediaRecorderRef.current = mediaRecorder;
+        try {
+          // 🛑 THE FIX: iOS Safari Fallback Logic
+          let mimeTypeOptions: MediaRecorderOptions = {
+            mimeType: "audio/webm",
+          }; // <-- ADDED TYPE HERE
 
-        mediaRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-            ws.send(event.data);
+          if (!MediaRecorder.isTypeSupported("audio/webm")) {
+            // If webm fails (iOS), try mp4, otherwise let the browser choose the default
+            mimeTypeOptions = MediaRecorder.isTypeSupported("audio/mp4")
+              ? { mimeType: "audio/mp4" }
+              : {};
           }
-        };
-        mediaRecorder.start(250);
+
+          const mediaRecorder = new MediaRecorder(
+            new MediaStream([audioTrack]),
+            mimeTypeOptions,
+          );
+          mediaRecorderRef.current = mediaRecorder;
+
+          mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+              ws.send(event.data);
+            }
+          };
+          mediaRecorder.start(250);
+        } catch (err) {
+          console.error("MediaRecorder initialization failed:", err);
+          setError(
+            "Your browser or device does not support audio streaming. Try Chrome or Safari.",
+          );
+          ws.close();
+          cleanup();
+        }
       };
 
       ws.onclose = () => cleanup();

@@ -698,6 +698,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
         return
 
     loop = asyncio.get_event_loop()
+    countdown_task = None
+    dg_connection = None
 
     try:
         user_res = await asyncio.to_thread(supabase.auth.get_user, token)
@@ -723,10 +725,15 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
         await websocket.close(code=1008)
         return
 
+    # --- THE BULLETPROOF BILLING LOOP ---
     countdown_active = True
     async def credit_countdown():
         while countdown_active:
-            await asyncio.sleep(60)
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                break # Die cleanly if cancelled
+                
             if not countdown_active: break
             
             try:
@@ -740,24 +747,27 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
                     await asyncio.to_thread(
                         lambda: supabase.table("user_credits").update({"balance_minutes": new_bal}).eq("user_id", user_id).execute()
                     )
-                    await websocket.send_json({"event": "credit_update", "balance": new_bal})
                     
-                    if new_bal <= 0:
-                        await websocket.send_json({"event": "out_of_credits"})
-                        await websocket.close()
+                    try:
+                        await websocket.send_json({"event": "credit_update", "balance": new_bal})
+                        if new_bal <= 0:
+                            await websocket.send_json({"event": "out_of_credits"})
+                            await websocket.close()
+                            break
+                    except RuntimeError:
+                        # 🛑 THE KILL SWITCH: If the user disconnected, STOP BILLING!
+                        logger.warning(f"Socket closed for {user_id}. Terminating ghost billing loop.")
                         break
             except Exception as e:
-                logger.error(f"⚠️ Countdown error: {e}")
+                logger.error(f"⚠️ Countdown DB error: {e}")
 
-    countdown_task = asyncio.create_task(credit_countdown())
-
+    # --- DEEPGRAM SETUP ---
     try:
         config = DeepgramClientOptions(url="api.deepgram.com", verbose=logging.WARNING)
         deepgram = DeepgramClient(DEEPGRAM_API_KEY, config)
         dg_connection = deepgram.listen.live.v("1")
     except Exception as e:
         logger.error(f"Deepgram Init Failed: {e}")
-        countdown_task.cancel()
         await websocket.close()
         return
 
@@ -765,10 +775,11 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
     
     async def trigger_ai_response(text):
         if len(text.strip()) < 2: return
-
-        logger.info(f"🚀 AI Triggered for {user_id}: '{text[:30]}...'")
-        await websocket.send_json({"event": "ai_start"})
-        
+        try:
+            await websocket.send_json({"event": "ai_start"})
+        except RuntimeError:
+            return 
+            
         system_prompt = current_brain.build_system_prompt()
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(current_brain.history)
@@ -784,16 +795,22 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
             await websocket.send_json({"event": "ai_done"})
         except Exception as e:
             logger.error(f"AI Error: {e}")
-            await websocket.send_json({"event": "ai_done"})
+            try:
+                await websocket.send_json({"event": "ai_done"})
+            except:
+                pass
 
-    # DEEPGRAM EVENT HANDLERS
     def on_message(self, result, **kwargs):
         sentence = result.channel.alternatives[0].transcript
         if len(sentence) > 0:
             is_final = result.is_final
-            asyncio.run_coroutine_threadsafe(
-                websocket.send_json({"event": "transcript", "text": sentence, "is_final": is_final}), loop
-            )
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    websocket.send_json({"event": "transcript", "text": sentence, "is_final": is_final}), loop
+                )
+            except RuntimeError:
+                pass 
+                
             if is_final:
                 transcript_buffer.append(sentence)
                 if sentence.strip().endswith("?"):
@@ -822,21 +839,40 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
     
     if dg_connection.start(options) is False:
         logger.error("Failed to connect to Deepgram")
-        countdown_task.cancel()
         await websocket.close()
         return
 
+    # --- THE MAIN EVENT LOOP ---
     try:
+        billing_started = False
         while True:
             message = await websocket.receive()
-            if "bytes" in message:
-                dg_connection.send(message["bytes"])
-            if "text" in message:
-                msg = json.loads(message["text"])
-                if msg.get("text") == "stop": break
+            
+            # 🛑 PROOF OF LIFE: We ONLY start the billing task if we successfully receive audio
+            if message.get("bytes"):
+                if not billing_started:
+                    countdown_task = asyncio.create_task(credit_countdown())
+                    billing_started = True
+                    logger.info(f"🎙️ Audio received. Billing started for {user_id}.")
+                    
+                dg_connection.send(message.get("bytes"))
+                
+            elif message.get("text"):
+                try:
+                    msg = json.loads(message.get("text"))
+                    if msg.get("text") == "stop": 
+                        break
+                except Exception as e:
+                    pass
+                    
     except WebSocketDisconnect:
         logger.info(f"🔴 User {user_id} Disconnected")
+    except Exception as e:
+        logger.error(f"Socket Error: {e}")
     finally:
+        # 🛑 GUARANTEED CLEANUP: This kills the loop even if the server throws an error
         countdown_active = False 
-        countdown_task.cancel()
-        dg_connection.finish()
+        if countdown_task:
+            countdown_task.cancel()
+        if dg_connection:
+            dg_connection.finish()
