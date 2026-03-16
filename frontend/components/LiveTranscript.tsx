@@ -35,6 +35,7 @@ export default function LiveTranscript({ mode }: LiveTranscriptProps) {
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const isPausedRef = useRef(false); // 🛑 ADD THIS NEW REF
 
   // 🥷 NINJA MODE STATE
   const [ninjaMode, setNinjaMode] = useState(false);
@@ -159,8 +160,14 @@ export default function LiveTranscript({ mode }: LiveTranscriptProps) {
   };
 
   // --- STEP 2: START INTERVIEW (UPDATED FOR MODES) ---
+  // --- STEP 2: START INTERVIEW (VERBOSE DEBUG VERSION) ---
   const startInterview = async () => {
-    if (wsRef.current || isConnecting) return;
+    // console.log("📍 [Step 1] Start button clicked");
+
+    if (wsRef.current || isConnecting) {
+      // console.log("⚠️ [Abort] Already connecting or connected");
+      return;
+    }
 
     setError(null);
     setIsConnecting(true);
@@ -168,10 +175,9 @@ export default function LiveTranscript({ mode }: LiveTranscriptProps) {
 
     try {
       let stream: MediaStream;
+      // console.log(`📍 [Step 2] Requesting permissions for ${mode} mode...`);
 
-      // --- LOGIC FORK BASED ON MODE ---
       if (mode === "video") {
-        // VIDEO MODE: Screen Share (System Audio)
         stream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
           audio: {
@@ -183,20 +189,21 @@ export default function LiveTranscript({ mode }: LiveTranscriptProps) {
           systemAudio: "include",
         });
       } else {
-        // PHONE MODE: Microphone (Speakerphone)
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
           },
-          video: false, // Explicitly no video
+          video: false,
         });
       }
-      // -------------------------------
+
+      console.log("📍 [Step 3] Media stream acquired successfully!");
 
       const audioTrack = stream.getAudioTracks()[0];
       if (!audioTrack) {
+        console.warn("⚠️ [Abort] No audio track found in the stream!");
         alert(
           mode === "video"
             ? "⚠️ No Audio Found! Check 'Share system audio'."
@@ -207,39 +214,51 @@ export default function LiveTranscript({ mode }: LiveTranscriptProps) {
         return;
       }
 
-      streamRef.current = stream;
-
-      // Only attach "onended" listener to video track if we are in Video mode
-      if (mode === "video" && stream.getVideoTracks().length > 0) {
-        stream.getVideoTracks()[0].onended = stopInterview;
-      }
-
-      // Grab the current user's session token
+      // console.log("📍 [Step 4] Fetching Supabase session...");
       const {
         data: { session },
       } = await supabase.auth.getSession();
+
       if (!session) {
+        console.error(
+          "❌ [Abort] No Supabase session found! User is not logged in locally.",
+        );
         setError("You must be logged in to start an interview.");
         setIsConnecting(false);
         return;
       }
 
       const wsUrlWithToken = `${WS_URL}?token=${session.access_token}`;
+      console.log(
+        // "📍 [Step 5] Attempting WebSocket connection to:",
+        wsUrlWithToken,
+      );
+
       const ws = new WebSocket(wsUrlWithToken);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        // console.log("✅ [Step 6] WebSocket CONNECTED successfully!");
         setIsConnected(true);
         setIsConnecting(false);
 
+        // 🛑 THE OFFICIAL KEEP-ALIVE PING
+        // If the user is paused, send a JSON ping every 5 seconds so Deepgram doesn't hang up.
+        const keepAliveInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN && isPausedRef.current) {
+            ws.send(JSON.stringify({ type: "KeepAlive" }));
+          }
+        }, 5000);
+
+        // Ensure the interval is cleared when the socket closes
+        ws.addEventListener("close", () => clearInterval(keepAliveInterval));
+
         try {
-          // 🛑 THE FIX: iOS Safari Fallback Logic
           let mimeTypeOptions: MediaRecorderOptions = {
             mimeType: "audio/webm",
-          }; // <-- ADDED TYPE HERE
+          };
 
           if (!MediaRecorder.isTypeSupported("audio/webm")) {
-            // If webm fails (iOS), try mp4, otherwise let the browser choose the default
             mimeTypeOptions = MediaRecorder.isTypeSupported("audio/mp4")
               ? { mimeType: "audio/mp4" }
               : {};
@@ -252,45 +271,61 @@ export default function LiveTranscript({ mode }: LiveTranscriptProps) {
           mediaRecorderRef.current = mediaRecorder;
 
           mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-              ws.send(event.data);
+            if (ws.readyState === WebSocket.OPEN) {
+              if (isPausedRef.current) {
+                // 🛑 If paused, just DROP the audio. Do not send anything binary!
+                return;
+              } else if (event.data.size > 0) {
+                // If not paused, send the real audio
+                ws.send(event.data);
+              }
             }
           };
           mediaRecorder.start(250);
         } catch (err) {
-          console.error("MediaRecorder initialization failed:", err);
-          setError(
-            "Your browser or device does not support audio streaming. Try Chrome or Safari.",
-          );
+          console.error("❌ MediaRecorder initialization failed:", err);
+          setError("Your browser or device does not support audio streaming.");
           ws.close();
           cleanup();
         }
       };
 
-      ws.onclose = () => cleanup();
+      ws.onerror = (err) => {
+        console.error("❌ WebSocket ERROR:", err);
+      };
+
+      ws.onclose = (event) => {
+        console.warn(
+          `🚪 WebSocket CLOSED! Code: ${event.code}, Reason: ${event.reason}`,
+        );
+        cleanup();
+      };
+
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
         handleServerMessage(data);
       };
     } catch (err) {
-      console.error(err);
-      setError("Failed to start recording.");
+      console.error("❌ Caught Error in startInterview:", err);
+      setError("Failed to start recording. Check permissions.");
       setIsConnecting(false);
     }
   };
 
   const togglePause = () => {
-    if (!streamRef.current) return;
-    const audioTrack = streamRef.current.getAudioTracks()[0];
-    if (!audioTrack) return;
+    setIsPaused((prev) => {
+      const willBePaused = !prev;
+      isPausedRef.current = willBePaused; // 🛑 INSTANTLY LOCK THE DATA GATE
 
-    if (isPaused) {
-      audioTrack.enabled = true;
-      setIsPaused(false);
-    } else {
-      audioTrack.enabled = false;
-      setIsPaused(true);
-    }
+      // We still try to hardware-mute the tracks just in case the browser supports it
+      if (streamRef.current) {
+        streamRef.current.getAudioTracks().forEach((track) => {
+          track.enabled = !willBePaused;
+        });
+      }
+
+      return willBePaused;
+    });
   };
 
   const handleServerMessage = (data: any) => {
@@ -380,6 +415,7 @@ export default function LiveTranscript({ mode }: LiveTranscriptProps) {
     setIsConnected(false);
     setIsConnecting(false);
     setIsPaused(false);
+    isPausedRef.current = false; // 🛑 RESET THE GATE ON CLOSE
     setNinjaMode(false); // Reset ninja mode on cleanup
     wsRef.current = null;
     mediaRecorderRef.current?.stop();

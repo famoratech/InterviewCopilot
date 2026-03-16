@@ -834,7 +834,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
         smart_format=True, 
         interim_results=True, 
         utterance_end_ms="1000", 
-        vad_events=True
+        
     )
     
     if dg_connection.start(options) is False:
@@ -848,7 +848,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
         while True:
             message = await websocket.receive()
             
-            # 🛑 PROOF OF LIFE: We ONLY start the billing task if we successfully receive audio
+            # 🛑 Catch the disconnect message so the server doesn't crash!
+            if message.get("type") == "websocket.disconnect":
+                logger.info(f"Frontend closed connection for {user_id}")
+                break 
+            
+            # 1. Handle Binary Audio Data Safely
             if message.get("bytes"):
                 if not billing_started:
                     countdown_task = asyncio.create_task(credit_countdown())
@@ -857,13 +862,20 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
                     
                 dg_connection.send(message.get("bytes"))
                 
+           # 2. Handle Text Commands Safely
             elif message.get("text"):
                 try:
                     msg = json.loads(message.get("text"))
-                    if msg.get("text") == "stop": 
+                    
+                    # 🛑 IF WE RECEIVE A KEEP-ALIVE PING, FORWARD IT TO DEEPGRAM
+                    if msg.get("type") == "KeepAlive":
+                        dg_connection.keep_alive()
+                        logger.info(f"KeepAlive ping sent to Deepgram for user {user_id}")
+                        
+                    elif msg.get("text") == "stop": 
                         break
                 except Exception as e:
-                    pass
+                    logger.error(f"Failed to parse websocket text: {e}")
                     
     except WebSocketDisconnect:
         logger.info(f"🔴 User {user_id} Disconnected")
