@@ -867,9 +867,10 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
                 try:
                     msg = json.loads(message.get("text"))
                     
-                    # 🛑 IF WE RECEIVE A KEEP-ALIVE PING, FORWARD IT TO DEEPGRAM
+                    # 🛑 IF WE RECEIVE A KEEP-ALIVE PING, FORWARD THE RAW TEXT TO DEEPGRAM
                     if msg.get("type") == "KeepAlive":
-                        dg_connection.keep_alive()
+                        # This is the manual way to keep-alive in SDK v3.1.0
+                        dg_connection.send('{"type": "KeepAlive"}')
                         logger.info(f"KeepAlive ping sent to Deepgram for user {user_id}")
                         
                     elif msg.get("text") == "stop": 
